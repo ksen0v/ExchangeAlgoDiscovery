@@ -102,3 +102,26 @@ def test_price_leader_deviation():
     assert metrics["C:spot"]["prem_bps"] > 90
     assert metrics["C:spot"]["dev_bps"] > 90
     assert metrics["A:spot"]["dev_bps"] < 10
+
+
+def test_config_rejects_values_that_would_break_tick():
+    cfg = DetectorConfig()
+    for bad in ({"window_sec": 0}, {"spike_ratio": 0}, {"algo_size_tolerance": 0}, {"imbalance": float("nan")}):
+        try:
+            cfg.update({"alert_score": 70, **bad})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted {bad}")
+    assert cfg.alert_score == 50  # nothing applied from a rejected update
+    cfg.update({"window_sec": "45", "telegram": False, "unknown": 1})
+    assert cfg.window_sec == 45 and isinstance(cfg.window_sec, int) and cfg.telegram is False
+
+
+def test_history_follows_window_and_baseline():
+    det = Detector(DetectorConfig(), history_sec=900)
+    det.cfg.update({"baseline_sec": 1800})
+    assert det.keep_sec >= 1830
+    det.reset("X")
+    det.ingest("A:spot", [Trade(NOW - 1500, 1.0, 1, 1.0, "buy")], now=NOW)
+    assert det.states["A:spot"].buckets  # not dropped as too old

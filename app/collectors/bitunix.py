@@ -16,6 +16,7 @@ class BitunixStream(Stream):
         self.session = session
         self.transport = "ws"
         self.mult = 1.0
+        self.merge_fills = False  # all trades of a message carry the message timestamp
 
     async def resolve(self) -> None:
         for prefix in ("", "1000", "10000", "1000000"):

@@ -189,7 +189,7 @@ details.inactive summary { cursor: pointer; }
 .chip::after { content: " ✕"; color: var(--muted); }
 .tape-cols, .tape-row {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1.1fr) minmax(0, 1.25fr) minmax(0, 0.8fr) 70px;
+  grid-template-columns: 88px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.75fr) 64px 26px;
   gap: 8px;
   padding: 2px 12px;
 }
@@ -205,6 +205,9 @@ details.inactive summary { cursor: pointer; }
 .tape-row.big { font-weight: 700; }
 .tape-row .ven { font-family: system-ui, sans-serif; }
 .tape-row .fills { color: var(--muted); font-size: 10px; }
+.tape-row.repeat { box-shadow: inset 3px 0 0 var(--rep); }
+.tape-row .rep { color: var(--rep); font-style: normal; font-size: 11px; font-weight: 700; }
+.demo { font-size: 10px; color: #111; background: var(--warn); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 2px; }
 
 /* dialog */
 dialog {

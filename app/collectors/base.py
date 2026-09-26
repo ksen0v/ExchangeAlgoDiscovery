@@ -36,6 +36,10 @@ class Stream:
         self._seed_until = 0.0
         self.connected_at = 0.0
         self.poll_seen: dict[object, float] = {}
+        # Fills of one taker order share a millisecond timestamp and get merged.
+        # Feeds with coarse timestamps (1 s, or one time per message) must not merge:
+        # distinct orders would be glued into one print.
+        self.merge_fills = True
 
     # --- to implement -------------------------------------------------
     async def resolve(self) -> None:
@@ -57,7 +61,7 @@ class Stream:
         WS feeds start with a snapshot of the same recent trades.
         """
         if trades:
-            self.on_trades(self, aggregate_fills(trades), False)
+            self.on_trades(self, self._prints(trades), False)
             if drop_replays:
                 self._seed_until = max(t.ts for t in trades)
 
@@ -72,7 +76,10 @@ class Stream:
         if self.status in ("connecting", "error"):
             self.status = "polling" if self.transport == "rest" else "live"
         self.error = ""
-        self.on_trades(self, aggregate_fills(trades), True)
+        self.on_trades(self, self._prints(trades), True)
+
+    def _prints(self, trades: list[Trade]) -> list[Trade]:
+        return aggregate_fills(trades) if self.merge_fills else sorted(trades, key=lambda t: t.ts)
 
     async def run(self) -> None:
         backoff = 2.0
