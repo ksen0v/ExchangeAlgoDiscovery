@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("PySide6.QtWidgets")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QRect, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from desktop.feed import Feed  # noqa: E402
@@ -98,3 +98,13 @@ def test_overlay_lock_is_click_through_and_keeps_geometry(qapp):
 def test_feed_ws_url():
     assert Feed("http://1.2.3.4:8000").ws_url() == "ws://1.2.3.4:8000/ws"
     assert Feed("https://radar.example.com/", "t k").ws_url() == "wss://radar.example.com/ws?token=t+k"
+
+
+def test_on_screen_rejects_windows_above_or_taller_than_screen(qapp):
+    from desktop.app import on_screen
+
+    g = qapp.primaryScreen().availableGeometry()
+    assert on_screen(QRect(g.left() + 50, g.top() + 50, 400, 300))
+    assert not on_screen(QRect(g.left() + 50, g.top() - 200, 400, 300))  # title bar above the screen
+    assert not on_screen(QRect(g.left() + 50, g.top(), 400, g.height() + 200))  # taller than the screen
+    assert not on_screen(QRect(g.right() + 500, g.top() + 50, 400, 300))  # on an unplugged monitor

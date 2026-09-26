@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QByteArray, QObject, QPoint, QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QObject, QPoint, QRect, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
@@ -203,6 +203,7 @@ class Controller(QObject):
 
         self._restore_geometry()
         self.main.show()
+        QTimer.singleShot(0, self._ensure_main_on_screen)
         self.act_overlay.setChecked(prefs.overlay_visible)
         self.act_lock.setChecked(prefs.overlay_locked)
         self.hotkeys.start({"overlay": prefs.hotkey_overlay, "lock": prefs.hotkey_lock})
@@ -253,12 +254,36 @@ class Controller(QObject):
         return tray
 
     def _restore_geometry(self) -> None:
-        if self.prefs.main_geometry:
-            self.main.restoreGeometry(QByteArray.fromHex(self.prefs.main_geometry.encode()))
-        if not (self.prefs.overlay_geometry and self.overlay.restoreGeometry(
-                QByteArray.fromHex(self.prefs.overlay_geometry.encode()))):
-            screen = QGuiApplication.primaryScreen().availableGeometry()
-            self.overlay.move(screen.right() - self.overlay.width() - 40, screen.top() + 90)
+        """Saved positions are used only while they are still on a screen (monitor unplugged,
+        Windows scaling changed); otherwise the windows are placed to fit the primary screen."""
+        avail = QGuiApplication.primaryScreen().availableGeometry()
+        main_ok = bool(self.prefs.main_geometry) and self.main.restoreGeometry(
+            QByteArray.fromHex(self.prefs.main_geometry.encode())
+        )
+        if not main_ok or not (self.main.isMaximized() or on_screen(self.main.geometry())):
+            self.main.resize(int(avail.width() * 0.9), int(avail.height() * 0.85))
+            self.main.move(avail.center() - self.main.rect().center())
+        overlay_ok = bool(self.prefs.overlay_geometry) and self.overlay.restoreGeometry(
+            QByteArray.fromHex(self.prefs.overlay_geometry.encode())
+        )
+        if not overlay_ok or not on_screen(self.overlay.geometry()):
+            self.overlay.resize(min(self.overlay.width(), avail.width() // 3), min(460, avail.height() // 2))
+            self.overlay.move(avail.right() - self.overlay.width() - 40, avail.top() + 90)
+
+    def _ensure_main_on_screen(self) -> None:
+        """The title bar and toolbar must be visible: pull the window back if Windows placed it too high."""
+        if self.main.isMaximized() or self.main.isFullScreen():
+            return
+        frame = self.main.frameGeometry()
+        screen = QGuiApplication.screenAt(frame.center()) or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        if frame.top() >= avail.top() and frame.bottom() <= avail.bottom() and frame.height() <= avail.height():
+            return
+        border = frame.height() - self.main.height()
+        self.main.resize(min(self.main.width(), avail.width()), min(self.main.height(), avail.height() - border))
+        frame = self.main.frameGeometry()
+        x = min(max(frame.left(), avail.left()), avail.right() - frame.width())
+        self.main.move(x, avail.top())
 
     def web_url(self) -> str:
         return self.base_url + (f"/?token={self.token}" if self.token else "/")
@@ -449,6 +474,16 @@ class Controller(QObject):
         log.info("selftest %s", result)
         self._quitting = True
         self.app.exit(0 if ok else 1)
+
+
+def on_screen(rect: QRect) -> bool:
+    """Top edge (where the title bar / overlay header is) inside some screen, and not taller than it."""
+    for screen in QGuiApplication.screens():
+        g = screen.availableGeometry()
+        grab = QPoint(rect.left() + min(80, rect.width() // 2), rect.top() + 5)
+        if g.contains(grab) and rect.height() <= g.height() and rect.bottom() <= g.bottom() + 40:
+            return True
+    return False
 
 
 def setup_logging() -> None:
