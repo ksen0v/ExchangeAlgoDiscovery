@@ -20,6 +20,22 @@ a = Analysis(  # noqa: F821
               "PySide6.QtDataVisualization", "PySide6.QtGraphs", "PySide6.QtBluetooth", "PySide6.QtSerialPort"],
     noarchive=False,
 )
+
+
+def _needed(entry) -> bool:
+    # QtWebEngine pulls in QML/Quick plugins (3D, multimedia, ...); widgets-only app does not load them.
+    # Translations: only Russian and English (Chromium locale packs included).
+    dest = entry[0].replace("\\", "/")
+    if "/qml/" in dest:
+        return False
+    if "/translations/" in dest:
+        name = dest.rsplit("/", 1)[-1]
+        return name in ("en-US.pak", "ru.pak") or name.endswith(("_ru.qm", "_en.qm"))
+    return True
+
+
+a.datas = [e for e in a.datas if _needed(e)]
+a.binaries = [e for e in a.binaries if _needed(e)]
 pyz = PYZ(a.pure)  # noqa: F821
 exe = EXE(  # noqa: F821
     pyz,
