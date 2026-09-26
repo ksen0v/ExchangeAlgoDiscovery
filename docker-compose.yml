@@ -1,0 +1,15 @@
+services:
+  radar:
+    build: .
+    container_name: manipulation-radar
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

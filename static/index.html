@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manipulation Radar</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23f0b90b'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Manipulation&nbsp;Radar</div>
+  <form id="coinForm" class="coin-form" autocomplete="off">
+    <input id="coinInput" placeholder="Тикер, например PEPE" maxlength="20" spellcheck="false" aria-label="Тикер монеты">
+    <button type="submit">Мониторить</button>
+  </form>
+  <div class="meta">
+    <span class="coin" id="coinLabel">—</span>
+    <span class="muted">консенсус</span> <span id="consensus" class="num">—</span>
+    <span class="muted">потоков</span> <span id="liveCount" class="num">—</span>
+  </div>
+  <div class="actions">
+    <button id="soundBtn" class="ghost" title="Звук алертов">🔔 Звук</button>
+    <button id="settingsBtn" class="ghost">⚙ Настройки</button>
+    <span id="conn" class="conn off" title="Связь с сервером">●</span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="panel streams">
+    <div class="panel-head">
+      <h2>Биржи</h2>
+      <span class="muted small" id="windowHint"></span>
+      <span class="spacer"></span>
+      <label class="small"><input type="checkbox" id="hideQuiet"> скрыть без сделок</label>
+    </div>
+    <div class="table-wrap">
+      <table id="streamsTable">
+        <thead>
+          <tr>
+            <th>Биржа</th>
+            <th class="r">Цена</th>
+            <th class="r" title="Изменение цены за окно, bps">Δ окно</th>
+            <th class="r" title="Отклонение премии к консенсусу от её обычного уровня, bps. Большое значение = биржа тянет цену">Лидер</th>
+            <th class="r" title="Объём в USD за окно">Объём</th>
+            <th class="r" title="Во сколько раз темп объёма выше базы">×База</th>
+            <th class="r" title="Доля агрессивных покупок">Покупки</th>
+            <th title="Серия одинаковых сделок в одну сторону">Алго</th>
+            <th class="r" title="Доля в объёме всех бирж за окно">Доля</th>
+            <th class="r">Скор</th>
+            <th title="Объём за 5 минут, 10-секундные бары: вверх покупки, вниз продажи">5 мин</th>
+          </tr>
+        </thead>
+        <tbody id="streamsBody"></tbody>
+      </table>
+      <details class="inactive">
+        <summary id="inactiveSummary">Не торгуется / подключение / ошибки</summary>
+        <div id="inactiveList"></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="side">
+    <section class="panel alerts">
+      <div class="panel-head">
+        <h2>Алерты</h2>
+        <span class="spacer"></span>
+        <button id="clearAlerts" class="ghost small">Очистить</button>
+      </div>
+      <ol id="alertsList" class="alerts-list"></ol>
+    </section>
+
+    <section class="panel tape">
+      <div class="panel-head tape-head">
+        <h2>Лента принтов</h2>
+        <label class="small">от $<input id="minUsd" type="number" min="0" step="500" value="3000"></label>
+        <select id="sideFilter" class="small" aria-label="Сторона">
+          <option value="all">все</option>
+          <option value="buy">покупки</option>
+          <option value="sell">продажи</option>
+        </select>
+        <button id="pauseBtn" class="ghost small">⏸ Пауза</button>
+      </div>
+      <div id="tapeFilters" class="chips"></div>
+      <div class="tape-cols"><span>Время</span><span>Биржа</span><span class="r">Цена</span><span class="r">Кол-во</span><span class="r">USD</span></div>
+      <div id="tapeList" class="tape-list"></div>
+    </section>
+  </section>
+</main>
+
+<dialog id="settingsDlg">
+  <form method="dialog" id="settingsForm">
+    <h3>Настройки детектора</h3>
+    <div class="grid" id="settingsGrid"></div>
+    <p class="muted small" id="tgStatus"></p>
+    <div class="dlg-actions">
+      <button type="button" id="tgTest" class="ghost">Тест Telegram</button>
+      <span class="spacer"></span>
+      <button value="cancel" class="ghost">Отмена</button>
+      <button type="submit" id="saveSettings" value="save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

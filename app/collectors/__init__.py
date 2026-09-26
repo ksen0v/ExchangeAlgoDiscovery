@@ -1,0 +1,33 @@
+import aiohttp
+
+from app.collectors.base import Stream, TradesCallback
+from app.collectors.bitmart import BitmartStream
+from app.collectors.bitunix import BitunixStream
+from app.collectors.ccxt_stream import CcxtPool, CcxtStream
+from app.collectors.coinw import CoinwStream
+from app.collectors.ourbit import OurbitStream
+from app.config import Source
+
+CUSTOM = {
+    "bitmart": BitmartStream,
+    "coinw": CoinwStream,
+    "bitunix": BitunixStream,
+    "ourbit": OurbitStream,
+}
+
+
+def make_stream(
+    venue: str,
+    kind: str,
+    source: Source,
+    coin: str,
+    on_trades: TradesCallback,
+    pool: CcxtPool,
+    session: aiohttp.ClientSession,
+) -> Stream:
+    if source.kind == "ccxt":
+        return CcxtStream(venue, kind, coin, on_trades, pool, source.id)
+    return CUSTOM[source.id](venue, kind, coin, on_trades, session)
+
+
+__all__ = ["CcxtPool", "Stream", "make_stream"]
