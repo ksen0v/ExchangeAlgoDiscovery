@@ -20,6 +20,22 @@ SPARK_BUCKETS = 30
 SPARK_STEP = 10  # seconds per sparkline bar
 RECENT_KEEP = 120  # seconds of individual trades kept for pattern detection
 
+# Allowed ranges of numeric settings: a zero window or tolerance would divide by
+# zero in tick() and silently stop every snapshot.
+LIMITS: dict[str, tuple[float, float]] = {
+    "window_sec": (5, 600),
+    "baseline_sec": (60, 3600),
+    "spike_ratio": (1.1, 1000),
+    "min_window_usd": (0, 1e10),
+    "imbalance": (0.5, 0.99),
+    "algo_min_repeats": (2, 1000),
+    "algo_size_tolerance": (0.001, 0.5),
+    "algo_min_trade_usd": (1, 1e10),
+    "lead_bps": (1, 10_000),
+    "alert_score": (1, 100),
+    "alert_cooldown_sec": (0, 86_400),
+}
+
 
 @dataclass
 class DetectorConfig:
@@ -37,9 +53,22 @@ class DetectorConfig:
     telegram: bool = True
 
     def update(self, data: dict) -> None:
+        """Apply known fields; raises ValueError and changes nothing if any value is invalid."""
+        new = {}
         for f in fields(self):
-            if f.name in data and data[f.name] is not None:
-                setattr(self, f.name, f.type(data[f.name]) if f.type is not bool else bool(data[f.name]))
+            v = data.get(f.name)
+            if v is None:
+                continue
+            if f.type is bool:
+                new[f.name] = v.lower() not in ("0", "false", "no", "") if isinstance(v, str) else bool(v)
+                continue
+            v = float(v)
+            lo, hi = LIMITS[f.name]
+            if not lo <= v <= hi:  # also rejects NaN
+                raise ValueError(f"{f.name} должно быть от {lo:g} до {hi:g}")
+            new[f.name] = int(v) if f.type is int else v
+        for k, v in new.items():
+            setattr(self, k, v)
 
     def dict(self) -> dict:
         return asdict(self)
@@ -159,6 +188,11 @@ class Detector:
         self.states: dict[str, StreamState] = {}
         self.consensus: float | None = None
 
+    @property
+    def keep_sec(self) -> int:
+        """Seconds of history needed: window + baseline, and never less than configured."""
+        return max(self.history, int(self.cfg.window_sec + self.cfg.baseline_sec) + 30)
+
     def reset(self, coin: str) -> None:
         self.coin = coin
         self.states = {}
@@ -173,7 +207,7 @@ class Detector:
         for t in trades:
             if t.ts > now + 2:
                 t.ts = now  # exchange clock ahead of ours
-            if t.ts < now - self.history or t.usd <= 0 or t.price <= 0:
+            if t.ts < now - self.keep_sec or t.usd <= 0 or t.price <= 0:
                 continue
             st.add(t)
             kept.append(t)
@@ -199,7 +233,7 @@ class Detector:
         b_lo = b_hi - int(cfg.baseline_sec) + 1
 
         for st in self.states.values():
-            st.prune(now, self.history)
+            st.prune(now, self.keep_sec)
 
         fresh = [st.last_price for st in self.states.values() if st.last_price and now - st.last_ts < 300]
         cons = median(fresh) if len(fresh) >= 2 else None

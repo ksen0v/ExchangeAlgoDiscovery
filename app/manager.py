@@ -9,6 +9,7 @@ from app.config import VENUES
 from app.detector import Detector
 from app.hub import Hub
 from app.models import Trade
+from app.repeats import RepeatTracker
 
 log = logging.getLogger(__name__)
 
@@ -24,24 +25,32 @@ class Manager:
         self._tasks: list[asyncio.Task] = []
         self._marked: set[str] = set()
         self._lock = asyncio.Lock()
+        self.repeats = RepeatTracker()
 
     def on_trades(self, stream: Stream, trades: list[Trade], live: bool) -> None:
         kept = self.detector.ingest(stream.key, trades)
-        if live and kept:
-            self.hub.push_trades(
-                [
-                    {
-                        "ts": t.ts,
-                        "key": stream.key,
-                        "side": t.side,
-                        "price": t.price,
-                        "amount": t.amount,
-                        "usd": t.usd,
-                        "fills": t.fills,
-                    }
-                    for t in kept
-                ]
-            )
+        cfg = self.detector.cfg
+        self.repeats.tolerance = cfg.algo_size_tolerance
+        self.repeats.min_usd = cfg.algo_min_trade_usd
+        rows = []
+        for t in kept:
+            rep = self.repeats.observe(stream.key, t)
+            if not live:
+                continue  # REST history only warms the stats
+            row = {
+                "ts": t.ts,
+                "key": stream.key,
+                "side": t.side,
+                "price": t.price,
+                "amount": t.amount,
+                "usd": t.usd,
+                "fills": t.fills,
+            }
+            if rep:
+                row["grp"], row["rep"] = rep
+            rows.append(row)
+        if rows:
+            self.hub.push_trades(rows)
 
     async def set_coin(self, coin: str) -> None:
         coin = coin.strip().upper()
@@ -49,6 +58,7 @@ class Manager:
             await self._stop()
             self.coin = coin
             self.detector.reset(coin)
+            self.repeats.reset()
             self._marked = set()
             for venue in VENUES:
                 for kind in ("spot", "perp"):

@@ -51,6 +51,11 @@ class Storage:
         async with self.db.execute(q, args) as cur:
             return [{**json.loads(data), "id": id_} async for id_, data in cur]
 
+    async def prune_alerts(self, before_ts: float) -> int:
+        cur = await self.db.execute("DELETE FROM alerts WHERE ts < ?", (before_ts,))
+        await self.db.commit()
+        return cur.rowcount
+
     async def get(self, key: str, default=None):
         async with self.db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
             row = await cur.fetchone()

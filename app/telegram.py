@@ -3,6 +3,7 @@ import asyncio
 import html
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -11,9 +12,17 @@ from app.detector import fmt_usd
 log = logging.getLogger(__name__)
 
 
-def format_alert(a: dict) -> str:
+def _zone(name: str) -> ZoneInfo | None:
+    try:
+        return ZoneInfo(name) if name else None
+    except Exception:  # noqa: BLE001 - unknown zone -> server local time
+        log.warning("unknown timezone %r, using server local time", name)
+        return None
+
+
+def format_alert(a: dict, tz: str = "") -> str:
     kind = "спот" if a["kind"] == "spot" else "фьючерс"
-    t = datetime.fromtimestamp(a["ts"]).strftime("%H:%M:%S")
+    t = datetime.fromtimestamp(a["ts"], _zone(tz)).strftime("%H:%M:%S")
     lines = [
         f"🚨 <b>{html.escape(a['coin'])}</b> · <b>{html.escape(a['venue'])}</b> {kind} · score {a['score']:.0f}",
         *(f"• {html.escape(r)}" for r in a["reasons"]),

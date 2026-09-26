@@ -16,9 +16,18 @@ class Settings(BaseSettings):
     db_path: str = str(ROOT / "data" / "radar.db")
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
-    # Seconds of per-second history kept per stream (must exceed window + baseline).
+    # Seconds of per-second history kept per stream (grows with window + baseline).
     history_sec: int = 900
     log_level: str = "INFO"
+    # If set, the dashboard/API/WebSocket require it: open http://host:8000/?token=...
+    # once (a cookie remembers it) or send "Authorization: Bearer ...".
+    auth_token: str = ""
+    # Alerts older than this are deleted (0 = keep forever).
+    alerts_keep_days: int = 30
+    # IANA zone for times in Telegram messages, e.g. Europe/Moscow ("" = server local time).
+    timezone: str = ""
+    # Simulated exchanges instead of real ones: to try the app without network access.
+    demo: bool = False
 
 
 settings = Settings()

@@ -33,6 +33,8 @@ const fmtTime = (ts, ms = false) => {
   return ms ? `${t}.${String(d.getMilliseconds()).padStart(3, "0")}` : t;
 };
 const splitKey = (key) => { const i = key.lastIndexOf(":"); return [key.slice(0, i), key.slice(i + 1)]; };
+// Colours of repeated-size groups (one algorithm = one colour); same list as the desktop overlay.
+const REP_COLORS = ["#f0b90b", "#8fb3ff", "#c38fff", "#4fd1d9", "#ff9f43", "#ff7eb6", "#b5e853", "#e6edf3"];
 const kindBadge = (kind) => `<span class="kind ${kind}">${kind === "perp" ? "perp" : "spot"}</span>`;
 function toast(msg) {
   const el = $("toast");
@@ -177,13 +179,16 @@ function tapeRowHtml(r) {
   const pct = Math.min(100, (r.usd / (S.minUsd * 10 || 1)) * 100);
   const big = r.usd >= S.minUsd * 5 ? " big" : "";
   const fills = r.fills > 1 ? ` <span class="fills" title="Склеено исполнений одного ордера">×${r.fills}</span>` : "";
-  return `<div class="tape-row ${r.side === "buy" ? "buy" : r.side === "sell" ? "sell" : ""}${big}">`
+  const color = r.rep ? REP_COLORS[r.grp % REP_COLORS.length] : "";
+  const rep = r.rep ? `<i class="rep" title="${r.rep}-й ордер такого же размера и стороны за минуту — похоже на алгоритм">×${r.rep}</i>` : "";
+  return `<div class="tape-row ${r.side === "buy" ? "buy" : r.side === "sell" ? "sell" : ""}${big}${r.rep ? " repeat" : ""}"${color ? ` style="--rep:${color}"` : ""}>`
     + `<div class="bg" style="width:${pct.toFixed(1)}%"></div>`
     + `<span>${fmtTime(r.ts, true)}</span>`
     + `<span class="ven">${esc(venue)}${kindBadge(kind)}</span>`
     + `<span class="r">${fmtPrice(r.price)}</span>`
     + `<span class="r">${fmtQty(r.amount)}${fills}</span>`
-    + `<span class="r usd">${fmtUsd(r.usd)}</span></div>`;
+    + `<span class="r usd">${fmtUsd(r.usd)}</span>`
+    + `<span class="r">${rep}</span></div>`;
 }
 
 function addTrades(rows) {
@@ -391,6 +396,7 @@ async function init() {
     const st = await api("/api/state");
     S.config = st.config;
     S.telegram = st.telegram;
+    $("demoBadge").hidden = !st.demo;
     setCoin(st.coin);
   } catch (err) {
     toast("Сервер недоступен: " + err.message);

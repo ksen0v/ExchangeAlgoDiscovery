@@ -17,6 +17,7 @@ class CoinwStream(Stream):
         super().__init__(venue, kind, coin, on_trades)
         self.session = session
         self.transport = "rest"
+        self.merge_fills = kind != "spot"  # spot trade times have 1 s resolution
 
     async def _fetch_raw(self) -> list[dict]:
         if self.kind == "spot":

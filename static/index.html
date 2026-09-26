@@ -9,7 +9,7 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">Manipulation&nbsp;Radar</div>
+  <div class="brand">Manipulation&nbsp;Radar <span id="demoBadge" class="demo" hidden title="Сделки сгенерированы (DEMO=1), это не реальные биржи">ДЕМО</span></div>
   <form id="coinForm" class="coin-form" autocomplete="off">
     <input id="coinInput" placeholder="Тикер, например PEPE" maxlength="20" spellcheck="false" aria-label="Тикер монеты">
     <button type="submit">Мониторить</button>
@@ -82,7 +82,7 @@
         <button id="pauseBtn" class="ghost small">⏸ Пауза</button>
       </div>
       <div id="tapeFilters" class="chips"></div>
-      <div class="tape-cols"><span>Время</span><span>Биржа</span><span class="r">Цена</span><span class="r">Кол-во</span><span class="r">USD</span></div>
+      <div class="tape-cols"><span>Время</span><span>Биржа</span><span class="r">Цена</span><span class="r">Кол-во</span><span class="r">USD</span><span class="r" title="Серия ордеров одинакового размера (алгоритм)">×</span></div>
       <div id="tapeList" class="tape-list"></div>
     </section>
   </section>

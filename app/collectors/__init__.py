@@ -5,8 +5,9 @@ from app.collectors.bitmart import BitmartStream
 from app.collectors.bitunix import BitunixStream
 from app.collectors.ccxt_stream import CcxtPool, CcxtStream
 from app.collectors.coinw import CoinwStream
+from app.collectors.demo import DemoStream
 from app.collectors.ourbit import OurbitStream
-from app.config import Source
+from app.config import Source, settings
 
 CUSTOM = {
     "bitmart": BitmartStream,
@@ -25,6 +26,8 @@ def make_stream(
     pool: CcxtPool,
     session: aiohttp.ClientSession,
 ) -> Stream:
+    if settings.demo:
+        return DemoStream(venue, kind, coin, on_trades)
     if source.kind == "ccxt":
         return CcxtStream(venue, kind, coin, on_trades, pool, source.id)
     return CUSTOM[source.id](venue, kind, coin, on_trades, session)
