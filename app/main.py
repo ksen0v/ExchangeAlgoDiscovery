@@ -203,6 +203,12 @@ async def get_alerts(coin: str | None = None, limit: int = 200) -> list[dict]:
     return await S.storage.alerts(coin.upper() if coin else None, min(limit, 1000))
 
 
+@app.get("/api/walls")
+async def get_walls(limit: int = 100) -> list[dict]:
+    """Latest wall events of the current coin, newest first."""
+    return list(S.detector.walls.recent)[::-1][: max(0, min(limit, 300))]
+
+
 @app.post("/api/telegram/test")
 async def telegram_test() -> dict:
     if not S.telegram.configured:

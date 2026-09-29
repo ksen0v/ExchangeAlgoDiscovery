@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 class Feed(QObject):
     trades = Signal(list)
+    walls = Signal(list)  # order-book wall events
     snapshot = Signal(dict)
     alert = Signal(dict)
     coin_changed = Signal(str)
@@ -55,8 +56,8 @@ class Feed(QObject):
         if self._thread:
             self._thread.join(5)
 
-    def set_filter(self, min_usd: float, keys: list[str]) -> None:
-        self._filter = {**self._filter, "min_usd": float(min_usd), "keys": list(keys)}
+    def set_filter(self, min_usd: float, keys: list[str], walls: bool = True) -> None:
+        self._filter = {**self._filter, "min_usd": float(min_usd), "keys": list(keys), "walls": walls}
         if self._loop:
             self._loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._send_filter()))
 
@@ -109,6 +110,8 @@ class Feed(QObject):
         kind = msg.get("type")
         if kind == "trades":
             self.trades.emit(msg.get("rows") or [])
+        elif kind == "walls":
+            self.walls.emit(msg.get("rows") or [])
         elif kind == "snapshot":
             self.last_snapshot = msg
             self.snapshot.emit(msg)

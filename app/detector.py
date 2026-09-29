@@ -6,6 +6,8 @@ Signals (all over the last `window_sec`, compared to the same stream's own past)
   3. algo pattern   - many near-equal taker orders on one side (TWAP / iceberg bots)
   4. price lead     - premium to the cross-exchange median price moves away from
                       its usual level (this venue is pulling the price, others follow)
+  5. walls          - a large limit order right at the price, re-placed after the price,
+                      or pulled without being filled (see app/walls.py)
 """
 import itertools
 import math
@@ -15,6 +17,7 @@ from dataclasses import asdict, dataclass, fields
 from statistics import median
 
 from app.models import Trade
+from app.walls import Levels, WallTracker
 
 SPARK_BUCKETS = 30
 SPARK_STEP = 10  # seconds per sparkline bar
@@ -34,6 +37,9 @@ LIMITS: dict[str, tuple[float, float]] = {
     "lead_bps": (1, 10_000),
     "alert_score": (1, 100),
     "alert_cooldown_sec": (0, 86_400),
+    "wall_min_usd": (0, 1e10),
+    "wall_ratio": (2, 1000),
+    "wall_band_bps": (1, 1000),
 }
 
 
@@ -51,6 +57,10 @@ class DetectorConfig:
     alert_score: float = 50
     alert_cooldown_sec: int = 90
     telegram: bool = True
+    walls: bool = True  # order-book analysis
+    wall_min_usd: float = 20_000
+    wall_ratio: float = 8.0  # times the median level of the same book
+    wall_band_bps: float = 50  # how close to the mid price (50 bps = 0.5 %)
 
     def update(self, data: dict) -> None:
         """Apply known fields; raises ValueError and changes nothing if any value is invalid."""
@@ -187,6 +197,7 @@ class Detector:
         self.coin = ""
         self.states: dict[str, StreamState] = {}
         self.consensus: float | None = None
+        self.walls = WallTracker()
 
     @property
     def keep_sec(self) -> int:
@@ -197,6 +208,7 @@ class Detector:
         self.coin = coin
         self.states = {}
         self.consensus = None
+        self.walls.reset()
 
     def ingest(self, key: str, trades: list[Trade], now: float | None = None) -> list[Trade]:
         now = now or time.time()
@@ -211,7 +223,17 @@ class Detector:
                 continue
             st.add(t)
             kept.append(t)
+        self.walls.on_trades(key, kept)
         return kept
+
+    def ingest_book(self, key: str, ts: float, bids: Levels, asks: Levels) -> list[dict]:
+        """Order-book snapshot -> wall events (new / moved / pulled / eaten)."""
+        cfg = self.cfg
+        if not cfg.walls:
+            return []
+        if key not in self.states:  # a book before the first trade still gets metrics
+            self.states[key] = StreamState()
+        return self.walls.update(key, ts, bids, asks, cfg.wall_min_usd, cfg.wall_ratio, cfg.wall_band_bps)
 
     def mark_connected(self, key: str, since: float) -> None:
         """A live stream with no trades still proves 'nothing happened' since `since`."""
@@ -257,6 +279,7 @@ class Detector:
         for key, st in self.states.items():
             buy, sell, unk, n, vol_w, vol_b = raw[key]
             m = self._stream_metrics(st, now, now_sec, b_lo, b_hi, buy, sell, n, vol_w, vol_b, cons, cons_ret)
+            m.update(self.walls.state(key, now) if self.cfg.walls else {"wall": None, "pulls": 0, "book": False})
             m["share"] = vol_w / total_w if total_w else None
             m["share_base"] = vol_b / total_b if total_b else None
             self._score(m)
@@ -355,6 +378,26 @@ class Detector:
         if dev is not None and abs(dev) >= cfg.lead_bps and m["vol_w"] >= 0.3 * cfg.min_window_usd:
             score += 8 + 7 * min(1.0, (abs(dev) - cfg.lead_bps) / cfg.lead_bps)
             reasons.append(f"Цена {'выше' if dev > 0 else 'ниже'} рынка на {abs(dev):.0f} bps (лидирует)")
+
+        wall = m.get("wall")
+        if wall:
+            k = min(1.0, math.log(max(wall["ratio"], cfg.wall_ratio) / cfg.wall_ratio) / math.log(4))
+            score += 8 + 6 * k + min(6, 3 * wall["push"])
+            side = "покупку" if wall["side"] == "bid" else "продажу"
+            if wall["push"]:
+                moved = f", переставляют за ценой ({wall['push']}×)"
+            elif wall["moves"]:
+                moved = f", переставляли {wall['moves']}×"
+            else:
+                moved = ""
+            reasons.append(
+                f"Плита на {side} {fmt_usd(wall['usd'])} в {wall['dist_bps'] / 100:.2f}% от цены "
+                f"(×{wall['ratio']:.0f} к стакану), стоит {wall['age']:.0f} с{moved}"
+            )
+        pulls = m.get("pulls") or 0
+        if pulls:
+            score += min(8, 4 * pulls)
+            reasons.append(f"Сняли без исполнения: {pulls} плит на {fmt_usd(m['pulled_usd'])} за 2 мин")
 
         share, share_base = m.get("share"), m.get("share_base")
         if active and share and share >= 0.1 and share_base is not None and share >= 3 * max(share_base, 0.01):

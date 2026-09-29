@@ -187,6 +187,7 @@ class Controller(QObject):
         self.hotkeys = Hotkeys()
 
         self.feed.trades.connect(self._on_trades)
+        self.feed.walls.connect(self.overlay.add_walls)
         self.feed.snapshot.connect(self._on_snapshot)
         self.feed.alert.connect(self._on_alert)
         self.feed.coin_changed.connect(self.overlay.set_coin)
@@ -207,7 +208,7 @@ class Controller(QObject):
         self.act_overlay.setChecked(prefs.overlay_visible)
         self.act_lock.setChecked(prefs.overlay_locked)
         self.hotkeys.start({"overlay": prefs.hotkey_overlay, "lock": prefs.hotkey_lock})
-        self.feed.set_filter(prefs.overlay.min_usd, prefs.overlay.keys)
+        self.feed.set_filter(prefs.overlay.min_usd, prefs.overlay.keys, prefs.overlay.show_walls)
 
         if self.server:
             self.main.show_message("Запуск сервера и подключение к биржам…")
@@ -401,7 +402,7 @@ class Controller(QObject):
     def _apply_overlay_prefs(self, p) -> None:
         self.prefs.overlay = p
         self.overlay.set_prefs(p)
-        self.feed.set_filter(p.min_usd, p.keys)
+        self.feed.set_filter(p.min_usd, p.keys, p.show_walls)
 
     def open_connection(self) -> None:
         from desktop.dialogs import ConnectionDialog

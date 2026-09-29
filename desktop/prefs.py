@@ -32,6 +32,8 @@ class OverlayPrefs:
     side: str = "all"  # all | buy | sell
     only_repeats: bool = False  # show only prints of repeating-size series (algorithms)
     highlight_repeats: bool = True
+    show_walls: bool = True  # large orders near the price (put / re-placed / pulled / eaten)
+    wall_min_usd: float = 0.0  # 0 = the server threshold (detector settings)
     font_size: int = 11
     opacity: float = 0.75  # of the background; text always stays solid
     show_time: bool = True

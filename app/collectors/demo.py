@@ -1,8 +1,10 @@
-"""Simulated trades (DEMO=1): try the dashboard and the overlay without exchange access.
+"""Simulated trades and order books (DEMO=1): try the app without exchange access.
 
 Every stream trades around one shared random-walk price. From time to time a
 stream runs an "algorithm": equal-size orders on one side at a steady pace,
-which is exactly what the detector and the tape highlighting look for.
+which is exactly what the detector and the tape highlighting look for. Books
+now and then get a "wall": a big order a few ticks from the price that is
+re-placed after the price and finally pulled or eaten.
 """
 import asyncio
 import math
@@ -55,6 +57,9 @@ class DemoStream(Stream):
         self.premium = rnd.gauss(0, 3) / 1e4
         self.algo: dict | None = None
         self.algo_at = time.time() + rnd.uniform(15, 300)
+        self.level_usd = self.median_usd * rnd.uniform(2, 6)
+        self.wall: dict | None = None
+        self.wall_at = time.time() + rnd.uniform(10, 240)
 
     async def resolve(self) -> None:
         await asyncio.sleep(random.uniform(0.2, 1.5))
@@ -97,6 +102,39 @@ class DemoStream(Stream):
             self.algo = None
             self.algo_at = now + random.uniform(120, 600)
         return out
+
+    def _book(self, now: float) -> tuple[list, list]:
+        mid = MARKET.price(self.coin, now) * (1 + self.premium)
+        tick = mid * 1e-4  # 1 bps levels
+        bids = [(mid - tick * (i + 0.5), self.level_usd * math.exp(random.gauss(0, 0.6))) for i in range(40)]
+        asks = [(mid + tick * (i + 0.5), self.level_usd * math.exp(random.gauss(0, 0.6))) for i in range(40)]
+        if self.wall is None and now >= self.wall_at:
+            self.wall = {
+                "side": random.choice(("bid", "ask")),
+                "usd": self.level_usd * random.uniform(15, 40),
+                "ticks": random.randint(2, 8),
+                "end": now + random.uniform(20, 90),
+            }
+        w = self.wall
+        if w:
+            if now > w["end"]:
+                self.wall = None
+                self.wall_at = now + random.uniform(60, 400)
+            else:
+                # re-placed on a 3-tick grid: it follows (and leans on) the price
+                grid = tick * 3
+                if w["side"] == "bid":
+                    bids.append((math.floor((mid - tick * w["ticks"]) / grid) * grid, w["usd"]))
+                else:
+                    asks.append((math.ceil((mid + tick * w["ticks"]) / grid) * grid, w["usd"]))
+        return bids, asks
+
+    async def book_loop(self) -> None:
+        self.book_status = "live"
+        while True:
+            await asyncio.sleep(0.5)
+            if self.books_on():
+                self.emit_book(*self._book(time.time()))
 
     async def stream(self) -> None:
         while True:

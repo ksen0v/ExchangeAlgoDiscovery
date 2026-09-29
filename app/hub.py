@@ -24,6 +24,7 @@ class Client:
         self.min_usd = 3000.0
         self.keys: frozenset[str] | None = None  # None = every stream
         self.lite = False  # snapshots without per-stream metrics (the overlay needs only statuses)
+        self.walls = True  # order-book wall events
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=CLIENT_QUEUE)
         self.overflow = asyncio.Event()
 
@@ -35,9 +36,14 @@ class Client:
             self.keys = frozenset(str(k) for k in keys) if isinstance(keys, list) and keys else None
         if "lite" in msg:
             self.lite = bool(msg["lite"])
+        if "walls" in msg:
+            self.walls = bool(msg["walls"])
 
     def wants(self, row: dict) -> bool:
         return row["usd"] >= self.min_usd and (self.keys is None or row["key"] in self.keys)
+
+    def wants_wall(self, event: dict) -> bool:
+        return self.walls and (self.keys is None or event["key"] in self.keys)
 
     def offer(self, text: str) -> None:
         try:
@@ -54,6 +60,7 @@ class Hub:
     def __init__(self) -> None:
         self.clients: set[Client] = set()
         self._tape: list[dict] = []
+        self._walls: list[dict] = []
 
     def add(self, ws: WebSocket) -> Client:
         c = Client(ws)
@@ -88,15 +95,20 @@ class Hub:
         if self.clients and len(self._tape) < MAX_TAPE_BUFFER:
             self._tape.extend(rows)
 
+    def push_walls(self, events: list[dict]) -> None:
+        if self.clients and len(self._walls) < MAX_TAPE_BUFFER:
+            self._walls.extend(events)
+
     def flush_tape(self) -> None:
-        if not self._tape:
-            return
-        batch, self._tape = self._tape, []
-        batch.sort(key=lambda r: r["ts"])
+        batch, self._tape = sorted(self._tape, key=lambda r: r["ts"]), []
+        walls, self._walls = self._walls, []
         for c in list(self.clients):
             rows = [r for r in batch if c.wants(r)]
             if rows:
                 c.offer(orjson.dumps({"type": "trades", "rows": rows}).decode())
+            events = [e for e in walls if c.wants_wall(e)]
+            if events:
+                c.offer(orjson.dumps({"type": "walls", "rows": events}).decode())
 
     async def run_tape(self) -> None:
         while True:

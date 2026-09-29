@@ -52,6 +52,11 @@ class Manager:
         if rows:
             self.hub.push_trades(rows)
 
+    def on_book(self, stream: Stream, ts: float, bids: list, asks: list) -> None:
+        events = self.detector.ingest_book(stream.key, ts, bids, asks)
+        if events:
+            self.hub.push_walls(events)
+
     async def set_coin(self, coin: str) -> None:
         coin = coin.strip().upper()
         async with self._lock:
@@ -66,6 +71,8 @@ class Manager:
                     if source is None:
                         continue
                     s = make_stream(venue.name, kind, source, coin, self.on_trades, self.pool, self.session)
+                    s.on_book = self.on_book
+                    s.books_on = lambda: self.detector.cfg.walls
                     self.streams[s.key] = s
                     self._tasks.append(asyncio.create_task(s.run(), name=s.key))
             log.info("monitoring %s on %d streams", coin, len(self.streams))

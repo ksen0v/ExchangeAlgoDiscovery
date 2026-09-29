@@ -1,12 +1,13 @@
 """Ourbit (not in ccxt, MEXC-like API): perpetuals over WebSocket, spot over REST polling."""
 import aiohttp
 
-from app.collectors.base import NotListed, Stream, TradesCallback, get_json, poll_loop, ws_loop
+from app.collectors.base import NotListed, Stream, TradesCallback, get_json, parse_levels, poll_loop, ws_loop
 from app.models import Trade
 
 PERP_REST = "https://futures.ourbit.com/api/v1/contract"
 PERP_WS = "wss://futures.ourbit.com/edge"
 SPOT_REST = "https://api.ourbit.com/api/v3/trades"
+SPOT_BOOK = "https://api.ourbit.com/api/v3/depth"
 
 
 class OurbitStream(Stream):
@@ -39,6 +40,15 @@ class OurbitStream(Stream):
             return  # the first REST poll is the seed
         data = await get_json(self.session, f"{PERP_REST}/deals/{self.symbol}")
         self.emit_seed([self._perp_trade(t) for t in data.get("data") or []])
+
+    async def fetch_book(self) -> tuple[list, list]:
+        if self.kind == "spot":
+            book = await get_json(self.session, SPOT_BOOK, {"symbol": self.symbol, "limit": 50})
+            return parse_levels(book.get("bids")), parse_levels(book.get("asks"))
+        data = await get_json(self.session, f"{PERP_REST}/depth/{self.symbol}")
+        book = data.get("data") or {}  # [price, contracts, orders]
+        cs = self.contract_size
+        return parse_levels(book.get("bids"), cs), parse_levels(book.get("asks"), cs)
 
     def _on_msg(self, msg) -> None:
         if not isinstance(msg, dict) or msg.get("channel") != "push.deal":

@@ -115,3 +115,5 @@ QUOTE_OVERRIDE: dict[str, list[str]] = {
 # ccxt normally reports derivative trade amounts in contracts; these exchanges'
 # parse_trade already converts to base units, so contractSize must not be applied.
 AMOUNT_IN_BASE: set[str] = {"xt", "bingx", "krakenfutures"}
+# Same for order-book amounts (XT converts trades but not depth, so it is not here).
+BOOK_AMOUNT_IN_BASE: set[str] = {"bingx", "krakenfutures"}
