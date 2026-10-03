@@ -62,3 +62,41 @@ def test_client_filter_message_parsing():
     c.set_filter({"min_usd": 1000, "keys": []})
     assert c.min_usd == 1000 and c.keys is None
     assert c.wants({"usd": 1500, "key": "Z:perp"}) and not c.wants({"usd": 500, "key": "Z:perp"})
+
+
+def test_switching_coin_works(client):
+    r = client.post("/api/coin", json={"coin": "demoy"})
+    assert r.status_code == 200 and r.json() == {"coin": "DEMOY"}
+    assert client.get("/api/state").json()["coin"] == "DEMOY"
+
+
+def test_watch_up_to_two_extra_coins(client):
+    r = client.put("/api/watch", json={"coins": ["pepe", "WIF", "pepe"]})
+    assert r.status_code == 200 and r.json()["coins"] == ["PEPE", "WIF"]
+    assert client.put("/api/watch", json={"coins": ["A1", "B2", "C3"]}).status_code == 400
+    assert client.put("/api/watch", json={"coins": ["BAD-1"]}).status_code == 400
+    st = client.get("/api/state").json()
+    assert st["watch"] == ["PEPE", "WIF"] and st["max_watch"] == 2
+    # a watched coin made the main one leaves the watch list
+    client.post("/api/coin", json={"coin": "PEPE"})
+    assert client.get("/api/watch").json()["coins"] == ["WIF"]
+
+
+def test_ws_client_of_a_watched_coin_gets_only_that_coin(client):
+    client.put("/api/watch", json={"coins": ["WIF"]})
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "filter", "min_usd": 0, "coin": "WIF", "lite": True})
+        seen = set()
+        snap = trades = False
+        for _ in range(300):
+            msg = ws.receive_json()
+            if msg["type"] == "snapshot":
+                seen.add(msg["coin"])
+                snap = snap or msg["coin"] == "WIF"
+            elif msg["type"] == "trades":
+                seen.update(r["coin"] for r in msg["rows"])
+                trades = True
+            assert msg["type"] != "walls"  # walls are for the main coin only
+            if snap and trades:
+                break
+        assert snap and trades and seen == {"WIF"}

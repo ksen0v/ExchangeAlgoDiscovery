@@ -89,6 +89,36 @@ def row_from(d: dict) -> Row:
     return Row(d["ts"], venue, kind, d.get("side", "?"), d["price"], d["amount"], d["usd"], d.get("grp", 0), d.get("rep", 0))
 
 
+@dataclass(slots=True)
+class WallRow:
+    """A large resting order near the price: put, re-placed, pulled or eaten (app/walls.py)."""
+
+    ts: float
+    venue: str
+    kind: str
+    side: str  # bid | ask
+    price: float
+    usd: float
+    dist_bps: float
+    event: str  # new | moved | pulled | eaten
+    towards: bool = False
+
+
+def wall_from(d: dict) -> WallRow:
+    venue, kind = split_key(d["key"])
+    return WallRow(d["ts"], venue, kind, d["side"], d["price"], d["usd"], d.get("dist_bps", 0.0), d["event"],
+                   bool(d.get("towards")))
+
+
+def wall_text(w: WallRow) -> str:
+    """What happened goes first: on a narrow overlay the tail is cut off."""
+    bid = w.side == "bid"
+    what = {"new": "плита", "moved": "переставили", "pulled": "СНЯЛИ", "eaten": "съели"}.get(w.event, w.event)
+    if w.event == "moved" and w.towards:
+        what += "⇡" if bid else "⇣"
+    return f"{'▲' if bid else '▼'} {what} {fmt_usd(w.usd)} @{fmt_price(w.price)} · {w.dist_bps / 100:.2f}%"
+
+
 class TapeView(QWidget):
     def __init__(self, parent: QWidget, prefs: OverlayPrefs):
         super().__init__(parent)
@@ -181,6 +211,10 @@ class TapeView(QWidget):
         for r in self.rows:
             if y > self.height():
                 break
+            if isinstance(r, WallRow):
+                self._paint_wall(p, r, y, lh, width, cols, text)
+                y += lh
+                continue
             side = BUY if r.side == "buy" else SELL if r.side == "sell" else MUTED
             big = r.usd >= big_usd
             bar = QColor(side)
@@ -205,6 +239,28 @@ class TapeView(QWidget):
             if rep_color and "rep" in cols:
                 text(cols["rep"], f"×{r.rep}", rep_color, font=self.bold)
             y += lh
+
+    def _paint_wall(self, p: QPainter, w: WallRow, y: int, lh: int, width: int, cols: dict, text) -> None:
+        color = BUY if w.side == "bid" else SELL
+        tint = QColor(color)
+        tint.setAlpha(45)
+        p.fillRect(QRect(0, y, width, lh - 1), tint)
+        frame = ACCENT if w.event == "pulled" else color
+        p.setPen(QPen(frame, 1))
+        p.drawRect(QRect(1, y, width - 3, lh - 2))
+        p.fillRect(QRect(0, y, 3, lh - 1), ACCENT)
+        left = Qt.AlignmentFlag.AlignLeft
+        if "time" in cols:
+            text(cols["time"], fmt_time(w.ts, True), TEXT_2, left)
+        vx, vw = cols["venue"]
+        name_w = min(vw, self.fm.horizontalAdvance(w.venue + " "))
+        text((vx, name_w), w.venue, TEXT, left)
+        perp = w.kind == "perp"
+        text((vx + name_w, max(0, vw - name_w)), "F" if perp else "S", PERP if perp else MUTED, left, self.small)
+        x0 = vx + vw + 4
+        fm = QFontMetrics(self.bold)
+        msg = fm.elidedText(wall_text(w), Qt.TextElideMode.ElideRight, max(10, width - x0 - 6))
+        text((x0, width - x0 - 6), msg, ACCENT if w.event == "pulled" else color.lighter(115), left, self.bold)
 
 
 class Header(QWidget):
@@ -358,8 +414,11 @@ class OverlayWindow(QWidget):
         self._banner_timer.start()
 
     # ---- data ------------------------------------------------------------
-    def accepts(self, r: Row) -> bool:
+    def accepts(self, r: Row | WallRow) -> bool:
         pr = self.prefs
+        if isinstance(r, WallRow):
+            return pr.show_walls and r.usd >= pr.wall_min_usd and (
+                not pr.keys or f"{r.venue}:{r.kind}" in pr.keys)
         if r.usd < pr.min_usd:
             return False
         if pr.keys and f"{r.venue}:{r.kind}" not in pr.keys:
@@ -373,6 +432,11 @@ class OverlayWindow(QWidget):
         shown = [r for r in map(row_from, rows) if self.accepts(r)]
         for r in shown:
             self.flow.append((now, r.side, r.usd))
+        if shown:
+            self.tape.add(shown)
+
+    def add_walls(self, events: list[dict]) -> None:
+        shown = [w for w in map(wall_from, events) if self.accepts(w)]
         if shown:
             self.tape.add(shown)
 

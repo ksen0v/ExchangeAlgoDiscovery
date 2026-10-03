@@ -32,6 +32,8 @@ class OverlayPrefs:
     side: str = "all"  # all | buy | sell
     only_repeats: bool = False  # show only prints of repeating-size series (algorithms)
     highlight_repeats: bool = True
+    show_walls: bool = True  # large orders near the price (put / re-placed / pulled / eaten)
+    wall_min_usd: float = 0.0  # 0 = the server threshold (detector settings)
     font_size: int = 11
     opacity: float = 0.75  # of the background; text always stays solid
     show_time: bool = True
@@ -39,6 +41,19 @@ class OverlayPrefs:
     show_qty: bool = False
     big_mult: float = 5.0  # prints >= min_usd * big_mult are bold
     max_rows: int = 300
+
+
+@dataclass
+class ExtraOverlay:
+    """An extra coin (tape only) with an overlay of its own."""
+
+    coin: str = ""
+    visible: bool = True
+    geometry: str = ""
+    overlay: OverlayPrefs = field(default_factory=OverlayPrefs)
+
+
+MAX_EXTRA = 2  # three coins in total, as on the server (app.manager.MAX_WATCH)
 
 
 @dataclass
@@ -58,6 +73,7 @@ class Prefs:
     hotkey_overlay: str = "ctrl+alt+t"
     hotkey_lock: str = "ctrl+alt+l"
     overlay: OverlayPrefs = field(default_factory=OverlayPrefs)
+    extra: list[ExtraOverlay] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path) -> "Prefs":
@@ -71,6 +87,15 @@ class Prefs:
             return p
         _fill(p, raw)
         _fill(p.overlay, raw.get("overlay") or {})
+        for item in raw.get("extra") or []:
+            if not isinstance(item, dict):
+                continue
+            e = ExtraOverlay()
+            _fill(e, item)
+            _fill(e.overlay, item.get("overlay") or {})
+            e.coin = e.coin.strip().upper()
+            if e.coin.isalnum() and e.coin not in [x.coin for x in p.extra] and len(p.extra) < MAX_EXTRA:
+                p.extra.append(e)
         return p
 
     def save(self, path: Path) -> None:
@@ -82,7 +107,7 @@ class Prefs:
 def _fill(obj, raw: dict) -> None:
     """Copy values of matching type only, so a hand-edited file cannot break the app."""
     for f in fields(obj):
-        if f.name not in raw or f.name == "overlay":
+        if f.name not in raw or f.name in ("overlay", "extra"):
             continue
         cur, v = getattr(obj, f.name), raw[f.name]
         if isinstance(cur, bool):

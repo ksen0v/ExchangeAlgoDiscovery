@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
-from app.collectors.base import NotListed, Stream, TradesCallback, get_json, poll_loop
+from app.collectors.base import NotListed, Stream, TradesCallback, get_json, parse_levels, poll_loop
 from app.models import Trade
 
 SPOT_URL = "https://api.coinw.com/api/v1/public"
 PERP_URL = "https://api.coinw.com/v1/perpumPublic/trades"
+PERP_BOOK = "https://api.coinw.com/v1/perpumPublic/depth"
 CN_TZ = timezone(timedelta(hours=8))  # spot trade times are UTC+8 strings
 
 
@@ -39,6 +40,15 @@ class CoinwStream(Stream):
             raise NotListed from None
         if not rows:
             raise NotListed
+
+    async def fetch_book(self) -> tuple[list, list]:
+        if self.kind == "spot":
+            params = {"command": "returnOrderBook", "symbol": self.symbol, "size": 50}
+            data = await get_json(self.session, SPOT_URL, params)
+        else:
+            data = await get_json(self.session, PERP_BOOK, {"base": self.symbol})
+        book = data.get("data") or {}
+        return parse_levels(book.get("bids")), parse_levels(book.get("asks"))
 
     def _convert(self, t: dict) -> tuple[object, Trade]:
         p = float(t["price"])

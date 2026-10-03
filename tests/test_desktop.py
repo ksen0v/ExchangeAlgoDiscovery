@@ -108,3 +108,39 @@ def test_on_screen_rejects_windows_above_or_taller_than_screen(qapp):
     assert not on_screen(QRect(g.left() + 50, g.top() - 200, 400, 300))  # title bar above the screen
     assert not on_screen(QRect(g.left() + 50, g.top(), 400, g.height() + 200))  # taller than the screen
     assert not on_screen(QRect(g.right() + 500, g.top() + 50, 400, 300))  # on an unplugged monitor
+
+
+def test_overlay_shows_wall_events_with_filters(qapp):
+    ov = OverlayWindow(OverlayPrefs(keys=["KuCoin:spot"], wall_min_usd=30_000))
+    ev = {"ts": NOW, "key": "KuCoin:spot", "side": "bid", "price": 1.0, "usd": 50_000.0, "dist_bps": 3.0,
+          "event": "moved", "towards": True}
+    ov.add_walls([ev, {**ev, "usd": 10_000.0}, {**ev, "key": "OKX:spot"}])
+    assert len(ov.tape.rows) == 1
+    ov.resize(470, 300)
+    assert not ov.tape.grab().isNull()  # paints a wall row
+    ov.set_prefs(OverlayPrefs(keys=["KuCoin:spot"], show_walls=False))
+    assert not ov.tape.rows
+
+
+def test_wall_text_starts_with_what_happened():
+    from desktop.overlay import WallRow, wall_text
+
+    w = WallRow(NOW, "KuCoin", "spot", "ask", 65_000.0, 251_000.0, 5.0, "pulled")
+    assert wall_text(w).startswith("▼ СНЯЛИ $251k @65,000.0")
+
+
+def test_extra_coins_load_dedup_and_limit(tmp_path):
+    path = tmp_path / "desktop.json"
+    path.write_text(json.dumps({"extra": [
+        {"coin": "pepe", "visible": False, "overlay": {"min_usd": 500, "keys": ["MEXC:spot"]}},
+        {"coin": "PEPE"},  # duplicate
+        {"coin": "bad-1"},  # not a ticker
+        "junk",
+        {"coin": "SOL"},
+        {"coin": "WIF"},  # over the limit of two extra coins
+    ]}), "utf-8")
+    p = Prefs.load(path)
+    assert [e.coin for e in p.extra] == ["PEPE", "SOL"]
+    assert p.extra[0].visible is False and p.extra[0].overlay.keys == ["MEXC:spot"] and p.extra[0].overlay.min_usd == 500
+    p.save(path)
+    assert [e.coin for e in Prefs.load(path).extra] == ["PEPE", "SOL"]

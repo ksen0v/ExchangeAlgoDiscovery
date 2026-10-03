@@ -18,7 +18,7 @@ from app.config import VENUES, settings
 from app.detector import Detector, DetectorConfig
 from app.fx import run_fx_updater
 from app.hub import Client, Hub
-from app.manager import Manager
+from app.manager import MAX_WATCH, Manager
 from app.storage import Storage
 from app.telegram import Telegram, format_alert
 
@@ -49,14 +49,16 @@ async def tick_loop() -> None:
             metrics, alerts = S.detector.tick()
             empty = {"score": 0, "reasons": []}
             rows = [{**info, **metrics.get(info["key"], empty)} for info in S.manager.infos()]
+            now = time.time()
             S.hub.broadcast_snapshot(
                 {
                     "type": "snapshot",
                     "coin": S.manager.coin,
-                    "ts": time.time(),
+                    "ts": now,
                     "consensus": S.detector.consensus,
                     "streams": rows,
-                }
+                },
+                S.manager.watch_snapshots(now),
             )
             for a in alerts:
                 a["id"] = await S.storage.add_alert(a)
@@ -106,6 +108,8 @@ async def lifespan(_: FastAPI):
     if not settings.demo:
         tasks.append(asyncio.create_task(run_fx_updater()))
     await S.manager.set_coin(await S.storage.get("coin", settings.default_coin))
+    watch = await S.storage.get("watch", [])
+    await S.manager.set_watch(watch if isinstance(watch, list) else [])
     try:
         yield
     finally:
@@ -159,6 +163,8 @@ async def get_state() -> dict:
         "config": S.detector.cfg.dict(),
         "telegram": S.telegram.configured,
         "demo": settings.demo,
+        "watch": list(S.manager.watch),
+        "max_watch": MAX_WATCH,
         "venues": [
             {"name": v.name, "spot": bool(v.spot), "perp": bool(v.perp), "custom": any(
                 s is not None and s.kind == "custom" for s in (v.spot, v.perp)
@@ -179,8 +185,34 @@ async def set_coin(body: CoinIn) -> dict:
         raise HTTPException(400, "Тикер должен состоять из букв и цифр, например PEPE")
     await S.manager.set_coin(coin)
     await S.storage.set("coin", coin)
-    await S.hub.broadcast({"type": "coin", "coin": coin})
+    await S.storage.set("watch", list(S.manager.watch))  # the new main coin leaves the watch list
+    S.hub.broadcast({"type": "coin", "coin": coin})
+    S.hub.broadcast({"type": "watch", "coins": list(S.manager.watch)})
     return {"coin": coin}
+
+
+class WatchIn(BaseModel):
+    coins: list[str]
+
+
+@app.get("/api/watch")
+async def get_watch() -> dict:
+    return {"coins": list(S.manager.watch), "max": MAX_WATCH}
+
+
+@app.put("/api/watch")
+async def put_watch(body: WatchIn) -> dict:
+    """Extra coins with a tape of their own (no detector): at most MAX_WATCH."""
+    coins = [c.strip().upper() for c in body.coins if c.strip()]
+    for c in coins:
+        if not c.isalnum() or len(c) > 20:
+            raise HTTPException(400, f"Тикер «{c}» должен состоять из букв и цифр")
+    if len(set(coins) - {S.manager.coin}) > MAX_WATCH:
+        raise HTTPException(400, f"Можно добавить не больше {MAX_WATCH} монет к основной")
+    result = await S.manager.set_watch(coins)
+    await S.storage.set("watch", result)
+    S.hub.broadcast({"type": "watch", "coins": result})
+    return {"coins": result, "max": MAX_WATCH}
 
 
 @app.get("/api/config")
@@ -201,6 +233,12 @@ async def put_config(body: dict) -> dict:
 @app.get("/api/alerts")
 async def get_alerts(coin: str | None = None, limit: int = 200) -> list[dict]:
     return await S.storage.alerts(coin.upper() if coin else None, min(limit, 1000))
+
+
+@app.get("/api/walls")
+async def get_walls(limit: int = 100) -> list[dict]:
+    """Latest wall events of the current coin, newest first."""
+    return list(S.detector.walls.recent)[::-1][: max(0, min(limit, 300))]
 
 
 @app.post("/api/telegram/test")
@@ -227,17 +265,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
         return
     await ws.accept()
     client = S.hub.add(ws)
+    reader = asyncio.create_task(_ws_reader(ws, client))
     tasks = [
-        asyncio.create_task(_ws_reader(ws, client)),
+        reader,
         asyncio.create_task(client.writer()),
         asyncio.create_task(client.overflow.wait()),  # too slow: drop, the client reconnects
     ]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        # No awaiting here when the client simply left: the handler must end promptly.
         S.hub.remove(client)
+        client_left = reader.done()
         for t in tasks:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(ws.close(), 2)
+        if not client_left:  # we end it (slow client / send failed): close, but never hang on it
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws.close(), 2)

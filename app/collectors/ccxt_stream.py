@@ -6,8 +6,8 @@ from collections import defaultdict, deque
 
 import ccxt.pro as ccxtpro
 
-from app.collectors.base import NotListed, Stream, TradesCallback, poll_loop
-from app.config import AMOUNT_IN_BASE, CCXT_OPTIONS, QUOTE_OVERRIDE
+from app.collectors.base import BOOK_DEPTH, NotListed, Stream, TradesCallback, poll_loop
+from app.config import AMOUNT_IN_BASE, BOOK_AMOUNT_IN_BASE, CCXT_OPTIONS, QUOTE_OVERRIDE
 from app.fx import usd_rate
 from app.models import Trade
 from app.symbols import pick_ccxt_market
@@ -78,6 +78,7 @@ class CcxtStream(Stream):
         self.quote = ""
         self._trade_times: deque[float] = deque(maxlen=50)
         self._seen: dict[object, None] = {}  # insertion-ordered set of trade keys
+        self.ws_book = False
 
     async def resolve(self) -> None:
         self.ex = await self.pool.create(self.ex_id)
@@ -88,6 +89,11 @@ class CcxtStream(Stream):
         self.symbol = self.market["symbol"]
         self.quote = self.market.get("quote")
         self.transport = "ws" if self.ex.has.get("watchTrades") else "rest"
+        self.ws_book = self.transport == "ws" and bool(self.ex.has.get("watchOrderBook"))
+
+    async def close(self) -> None:
+        ex, self.ex = self.ex, None
+        await self.pool.release(ex)
 
     def _idle_limit(self) -> float:
         """Silence after which the socket is assumed dead: short for busy markets."""
@@ -109,22 +115,25 @@ class CcxtStream(Stream):
             del self._seen[next(iter(self._seen))]
         return out
 
+    def _quote_amount(self, price: float, amount: float, in_base: set[str]) -> float:
+        """Notional in the quote currency; derivative amounts are usually in contracts."""
+        m = self.market
+        if not m.get("contract"):
+            return amount * price
+        cs = 1.0 if self.ex_id in in_base else float(m.get("contractSize") or 1)
+        return amount * cs if m.get("inverse") else amount * cs * price
+
     def convert(self, raw: list[dict]) -> list[Trade]:
         fx = usd_rate(self.quote)
         if fx is None:
             return []
-        m = self.market
         out = []
         for t in raw:
             price, amount = t.get("price"), t.get("amount")
             if not price or not amount:
                 continue
             price, amount = float(price), float(amount)
-            if m.get("contract"):
-                cs = 1.0 if self.ex_id in AMOUNT_IN_BASE else float(m.get("contractSize") or 1)
-                quote_amt = amount * cs if m.get("inverse") else amount * cs * price
-            else:
-                quote_amt = amount * price
+            quote_amt = self._quote_amount(price, amount, AMOUNT_IN_BASE)
             base_units = quote_amt / price
             side = t.get("side") if t.get("side") in ("buy", "sell") else "?"
             ts = t.get("timestamp")
@@ -138,6 +147,50 @@ class CcxtStream(Stream):
                 )
             )
         return out
+
+    def convert_book(self, ob: dict) -> tuple[list, list]:
+        fx = usd_rate(self.quote)
+        if fx is None:
+            return [], []
+
+        def side(levels) -> list[tuple[float, float]]:
+            out = []
+            for lv in levels[:BOOK_DEPTH]:
+                price, amount = float(lv[0]), float(lv[1])
+                if price > 0 and amount > 0:
+                    out.append((price * fx / self.mult, self._quote_amount(price, amount, BOOK_AMOUNT_IN_BASE) * fx))
+            return out
+
+        return side(ob.get("bids") or []), side(ob.get("asks") or [])
+
+    async def fetch_book(self) -> tuple[list, list]:
+        if self.ex is None:
+            raise ConnectionError("exchange instance is reconnecting")
+        return self.convert_book(await asyncio.wait_for(self.ex.fetch_order_book(self.symbol), 20))
+
+    async def _recreate(self) -> ccxtpro.Exchange:
+        self.ex = await self.pool.create(self.ex_id)
+        return self.ex
+
+    async def book_loop(self) -> None:
+        if not self.ws_book:
+            await super().book_loop()  # REST polling
+            return
+        self.book_status = "live"
+        while True:
+            if not self.books_on():
+                await asyncio.sleep(1)
+                continue
+            ex = self.ex
+            if ex is None:  # the trade watchdog is reconnecting the instance
+                await asyncio.sleep(1)
+                continue
+            try:
+                ob = await asyncio.wait_for(ex.watch_order_book(self.symbol), 60)
+            except asyncio.TimeoutError:
+                continue  # a quiet book; ccxt reconnects dropped sockets itself
+            if self.book_due():
+                self.emit_book(*self.convert_book(ob))
 
     async def _fetch(self, limit: int | None) -> list[dict]:
         try:
@@ -157,7 +210,7 @@ class CcxtStream(Stream):
     async def stream(self) -> None:
         if self.transport == "ws":
             if self.ex is None:  # torn down by the watchdog
-                self.ex = await self.pool.create(self.ex_id)
+                await self._recreate()
             while True:
                 try:
                     raw = await asyncio.wait_for(self.ex.watch_trades(self.symbol), self._idle_limit())

@@ -62,6 +62,8 @@ const S = {
   paused: false,
   sound: store.get("sound", true),
   hideQuiet: store.get("hideQuiet", false),
+  tab: store.get("tab", "alerts"),
+  unseenWalls: 0,
   tape: [], // raw rows, newest first
   pending: [],
   ws: null,
@@ -88,6 +90,24 @@ function sparkSvg(spark) {
   return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Объём за 5 минут">${bars}</svg>`;
 }
 
+function wallCell(s) {
+  const pulls = s.pulls
+    ? ` <span class="warn" title="Сняли без исполнения за 2 мин: ${s.pulls} плит на ${fmtUsd(s.pulled_usd)}">↯${s.pulls}</span>` : "";
+  const w = s.wall;
+  if (w) {
+    const bid = w.side === "bid";
+    const title = `Плита на ${bid ? "покупку" : "продажу"} ${fmtUsd(w.usd)} по ${fmtPrice(w.price)}: `
+      + `${(w.dist_bps / 100).toFixed(2)}% от цены, ×${w.ratio.toFixed(0)} к обычному уровню стакана, стоит ${Math.round(w.age)} с`
+      + (w.moves ? `, переставляли ${w.moves}× (за ценой ${w.push}×)` : "");
+    const push = w.push ? ` <span class="push">${bid ? "⇡" : "⇣"}${w.push}</span>` : "";
+    return `<span class="${bid ? "pos" : "neg"}" title="${esc(title)}">${bid ? "▲" : "▼"}${fmtUsd(w.usd)} `
+      + `<span class="dim">${(w.dist_bps / 100).toFixed(2)}%</span></span>${push}${pulls}`;
+  }
+  if (pulls) return pulls.trim();
+  if (s.book_status === "error") return `<span class="dim" title="Стакан: ${esc(s.book_error)}">стакан ⚠</span>`;
+  return '<span class="dim">—</span>';
+}
+
 function isActive(s) {
   return (s.status === "live" || s.status === "polling") && s.price != null;
 }
@@ -110,6 +130,7 @@ function renderStreams() {
       ? `<span class="${s.algo.side === "buy" ? "pos" : "neg"}" title="${s.algo.count} сделок ≈${fmtUsd(s.algo.avg_usd)}${s.algo.regular ? `, шаг ~${s.algo.interval.toFixed(1)}с` : ""}">${s.algo.count}×${fmtUsd(s.algo.avg_usd)}${s.algo.regular ? " ⏱" : ""}</span>`
       : '<span class="dim">—</span>';
     const share = s.share == null ? "—" : (s.share * 100).toFixed(s.share < 0.1 ? 1 : 0) + "%";
+    const wall = wallCell(s);
     const stale = s.age != null && s.age > 60 ? ` <span class="dim" title="Последняя сделка ${Math.round(s.age)}с назад">·</span>` : "";
     let html = `<tr class="${cls}" data-key="${esc(s.key)}">
       <td class="venue">${esc(venue)}${kindBadge(s.kind)}</td>
@@ -120,16 +141,17 @@ function renderStreams() {
       <td class="r">${ratio}</td>
       <td class="r">${buy}</td>
       <td>${algo}</td>
+      <td class="wallcell">${wall}</td>
       <td class="r">${share}</td>
       <td class="r score"><b>${s.score.toFixed(0)}</b></td>
       <td>${sparkSvg(s.spark || [])}</td>
     </tr>`;
     if ((hot || warm) && s.reasons && s.reasons.length) {
-      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="11">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
+      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="12">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
     }
     return html;
   });
-  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="11" class="empty">Подключаемся к биржам…</td></tr>`;
+  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="12" class="empty">Подключаемся к биржам…</td></tr>`;
 
   const inactive = S.streams.filter((s) => !isActive(s));
   const label = { na: "нет пары", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
@@ -263,7 +285,54 @@ $("alertsList").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-key]");
   if (li) toggleSelected(li.dataset.key, true);
 });
-$("clearAlerts").addEventListener("click", () => renderAlerts([]));
+$("clearAlerts").addEventListener("click", () => (S.tab === "walls" ? renderWalls([]) : renderAlerts([])));
+
+// ---------- walls (large orders near the price) ----------
+const WALL_EVENT = { new: "поставили", moved: "переставили", pulled: "сняли, не исполнив", eaten: "съели" };
+function wallHtml(e, fresh) {
+  const [venue, kind] = splitKey(e.key);
+  const bid = e.side === "bid";
+  let what = WALL_EVENT[e.event] || e.event;
+  if (e.event === "moved") what += e.towards ? ` ${bid ? "⇡" : "⇣"} за ценой` : ` ${bid ? "⇣" : "⇡"}`;
+  return `<li class="wall ${esc(e.event)}${fresh ? " fresh" : ""}" data-key="${esc(e.key)}">`
+    + `<span class="t">${fmtTime(e.ts)}</span><span class="v">${esc(venue)}</span>${kindBadge(kind)}`
+    + `<span class="${bid ? "pos" : "neg"} sz">${bid ? "▲" : "▼"} ${fmtUsd(e.usd)}</span>`
+    + `<span class="num">${fmtPrice(e.price)}</span>`
+    + `<span class="muted">${(e.dist_bps / 100).toFixed(2)}% · ×${e.ratio.toFixed(0)}${e.age >= 1 ? ` · ${Math.round(e.age)} с` : ""}</span>`
+    + `<span class="ev">${what}</span></li>`;
+}
+function renderWalls(list) {
+  $("wallsList").innerHTML = list.map((e) => wallHtml(e, false)).join("")
+    || '<li class="empty">Плит пока нет. Здесь появятся крупные заявки у цены: когда их ставят, переставляют за ценой, снимают или съедают.</li>';
+  $("wallsCount").textContent = "";
+}
+function addWalls(rows) {
+  const list = $("wallsList");
+  const empty = list.querySelector(".empty");
+  if (empty) empty.remove();
+  list.insertAdjacentHTML("afterbegin", rows.slice().reverse().map((e) => wallHtml(e, true)).join(""));
+  while (list.childElementCount > 300) list.lastElementChild.remove();
+  if (S.tab !== "walls") {
+    S.unseenWalls += rows.length;
+    $("wallsCount").textContent = S.unseenWalls;
+  }
+}
+$("wallsList").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-key]");
+  if (li) toggleSelected(li.dataset.key, true);
+});
+async function loadWalls() {
+  try { renderWalls(await api("/api/walls?limit=150")); } catch { /* ignore */ }
+}
+function setTab(tab) {
+  S.tab = tab;
+  store.set("tab", tab);
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  $("alertsList").hidden = tab !== "alerts";
+  $("wallsList").hidden = tab !== "walls";
+  if (tab === "walls") { S.unseenWalls = 0; $("wallsCount").textContent = ""; }
+}
+document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
 async function loadAlerts() {
   try { renderAlerts(await api(`/api/alerts?coin=${encodeURIComponent(S.coin)}&limit=100`)); } catch { /* ignore */ }
 }
@@ -304,6 +373,7 @@ function setCoin(coin) {
   renderChips();
   rebuildTape();
   loadAlerts();
+  loadWalls();
 }
 $("coinForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -334,11 +404,15 @@ const FIELDS = [
   ["lead_bps", "Лидерство цены, bps", "уход от обычной премии к рынку"],
   ["alert_score", "Порог алерта, скор", "0–100"],
   ["alert_cooldown_sec", "Пауза алертов, сек", "для одной биржи"],
+  ["wall_min_usd", "Плита: от, $", "меньше — не плита (для BTC ставь $500k+)"],
+  ["wall_ratio", "Плита: × к стакану", "во сколько раз больше обычного уровня"],
+  ["wall_band_bps", "Плита: близость, bps", "50 = не дальше 0.5% от цены"],
 ];
 function openSettings() {
   const c = S.config;
   $("settingsGrid").innerHTML = FIELDS.map(([k, label, hint]) =>
     `<label>${label}<input name="${k}" type="number" step="any" value="${c[k]}"><small>${hint}</small></label>`).join("")
+    + `<label class="check"><input name="walls" type="checkbox" ${c.walls ? "checked" : ""}> Искать плиты в стаканах</label>`
     + `<label class="check"><input name="telegram" type="checkbox" ${c.telegram ? "checked" : ""}> Отправлять алерты в Telegram</label>`;
   $("tgStatus").textContent = S.telegram
     ? "Telegram настроен."
@@ -351,6 +425,7 @@ $("settingsForm").addEventListener("submit", async (e) => {
   const body = {};
   for (const [k] of FIELDS) body[k] = Number($("settingsForm").elements[k].value);
   body.telegram = $("settingsForm").elements.telegram.checked;
+  body.walls = $("settingsForm").elements.walls.checked;
   try {
     S.config = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
     toast("Настройки сохранены");
@@ -381,6 +456,8 @@ function connect() {
       renderStreams();
     } else if (msg.type === "trades") {
       addTrades(msg.rows);
+    } else if (msg.type === "walls") {
+      addWalls(msg.rows);
     } else if (msg.type === "alert") {
       if (msg.alert.coin === S.coin) addAlert(msg.alert);
     } else if (msg.type === "coin") {
@@ -391,6 +468,7 @@ function connect() {
 
 async function init() {
   renderSound();
+  setTab(S.tab === "walls" ? "walls" : "alerts");
   renderChips();
   try {
     const st = await api("/api/state");

@@ -1,4 +1,4 @@
-"""Base class for one trade stream (one venue x one market kind)."""
+"""Base class for one stream (one venue x one market kind): trades, plus its order book."""
 import asyncio
 import json
 import logging
@@ -16,6 +16,33 @@ log = logging.getLogger(__name__)
 REST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 TradesCallback = Callable[["Stream", list[Trade], bool], None]  # (stream, trades, live)
+# (stream, ts, bids, asks); levels are (USD price of one coin, USD size), best first
+BookCallback = Callable[["Stream", float, list[tuple[float, float]], list[tuple[float, float]]], None]
+
+BOOK_EVERY = 0.5  # s between processed book snapshots (walls need no 100 ms resolution)
+BOOK_POLL = 2.0  # s between REST depth requests where there is no WebSocket book
+BOOK_DEPTH = 50  # levels per side
+PRICE_KEYS = ("price", "p", "px")
+AMOUNT_KEYS = ("amount", "qty", "quantity", "size", "vol", "volume", "q", "v", "m", "sz")
+
+
+def parse_levels(raw, amount_mult: float = 1.0, price_div: float = 1.0) -> list[tuple[float, float]]:
+    """Depth levels as [price, amount, ...] or {"price":..,"qty":..} -> (price per coin, USD size).
+
+    amount_mult turns contracts into base units; price_div removes 1000x-contract prefixes.
+    Quotes are USDT/USDC, taken 1:1 as USD.
+    """
+    out = []
+    for lv in (raw or [])[:BOOK_DEPTH]:
+        if isinstance(lv, dict):
+            p = next((lv[k] for k in PRICE_KEYS if k in lv), None)
+            a = next((lv[k] for k in AMOUNT_KEYS if k in lv), None)
+        else:
+            p, a = lv[0], lv[1]
+        p, a = float(p), float(a) * amount_mult
+        if p > 0 and a > 0:
+            out.append((p / price_div, p * a))
+    return out
 
 
 class NotListed(Exception):
@@ -40,6 +67,12 @@ class Stream:
         # Feeds with coarse timestamps (1 s, or one time per message) must not merge:
         # distinct orders would be glued into one print.
         self.merge_fills = True
+        # Order book: set by the manager; books_on() lets the detector switch analysis off.
+        self.on_book: BookCallback | None = None
+        self.books_on: Callable[[], bool] = lambda: False
+        self.book_status = ""  # "" | live | polling | error | none
+        self.book_error = ""
+        self._book_at = 0.0
 
     # --- to implement -------------------------------------------------
     async def resolve(self) -> None:
@@ -52,6 +85,25 @@ class Stream:
     async def stream(self) -> None:
         """Emit trades forever; return/raise to reconnect."""
         raise NotImplementedError
+
+    async def close(self) -> None:
+        """Release connections after the task is cancelled (ccxt instances)."""
+
+    async def fetch_book(self) -> tuple[list, list]:
+        """REST depth -> (bids, asks) via parse_levels. Venues without it have no book."""
+        raise NotImplementedError
+
+    async def book_loop(self) -> None:
+        """Emit book snapshots forever; default: poll fetch_book(). Return/raise to restart."""
+        if type(self).fetch_book is Stream.fetch_book:
+            self.book_status = "none"
+            return
+        self.book_status = "polling"
+        while True:
+            started = time.monotonic()
+            if self.books_on():
+                self.emit_book(*await self.fetch_book())
+            await asyncio.sleep(max(0.2, BOOK_POLL - (time.monotonic() - started)))
 
     # --- shared ---------------------------------------------------------
     def emit_seed(self, trades: list[Trade], drop_replays: bool = True) -> None:
@@ -81,36 +133,72 @@ class Stream:
     def _prints(self, trades: list[Trade]) -> list[Trade]:
         return aggregate_fills(trades) if self.merge_fills else sorted(trades, key=lambda t: t.ts)
 
-    async def run(self) -> None:
+    def book_due(self) -> bool:
+        return time.monotonic() - self._book_at >= BOOK_EVERY
+
+    def emit_book(self, bids: list, asks: list, ts: float | None = None) -> None:
+        self._book_at = time.monotonic()
+        if self.book_status == "error":
+            self.book_status = "polling" if self.transport == "rest" else "live"
+        self.book_error = ""
+        if self.on_book and bids and asks:
+            self.on_book(self, ts or time.time(), bids, asks)
+
+    async def _book_runner(self) -> None:
+        """Order book next to the trades: its failures never touch the trade stream."""
         backoff = 2.0
-        resolved = False
         while True:
             try:
-                self.status = "connecting"
-                if not resolved:
-                    await self.resolve()
-                    resolved = True
-                    try:
-                        await self.seed()
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:  # noqa: BLE001 - seed is best effort
-                        log.info("%s seed failed: %s", self.key, e)
-                self.status = "polling" if self.transport == "rest" else "live"
-                self.connected_at = self.connected_at or time.time()
-                await self.stream()
+                await self.book_loop()
+                if self.book_status == "none":
+                    return
                 backoff = 2.0
             except asyncio.CancelledError:
                 raise
-            except NotListed:
-                self.status, self.error = "na", ""
-                return
-            except Exception as e:  # noqa: BLE001 - any network/parse error -> reconnect
-                self.status = "error"
-                self.error = f"{type(e).__name__}: {e}"[:200]
-                log.info("%s error: %s", self.key, self.error)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
+            except Exception as e:  # noqa: BLE001
+                self.book_status = "error"
+                self.book_error = f"{type(e).__name__}: {e}"[:200]
+                log.info("%s book error: %s", self.key, self.book_error)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+
+    async def run(self) -> None:
+        backoff = 2.0
+        resolved = False
+        book_task: asyncio.Task | None = None
+        try:
+            while True:
+                try:
+                    self.status = "connecting"
+                    if not resolved:
+                        await self.resolve()
+                        resolved = True
+                        try:
+                            await self.seed()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:  # noqa: BLE001 - seed is best effort
+                            log.info("%s seed failed: %s", self.key, e)
+                    if book_task is None and self.on_book:
+                        book_task = asyncio.create_task(self._book_runner(), name=f"{self.key}:book")
+                    self.status = "polling" if self.transport == "rest" else "live"
+                    self.connected_at = self.connected_at or time.time()
+                    await self.stream()
+                    backoff = 2.0
+                except asyncio.CancelledError:
+                    raise
+                except NotListed:
+                    self.status, self.error = "na", ""
+                    return
+                except Exception as e:  # noqa: BLE001 - any network/parse error -> reconnect
+                    self.status = "error"
+                    self.error = f"{type(e).__name__}: {e}"[:200]
+                    log.info("%s error: %s", self.key, self.error)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60.0)
+        finally:
+            if book_task:
+                book_task.cancel()
 
     def info(self) -> dict:
         return {
@@ -121,6 +209,8 @@ class Stream:
             "status": self.status,
             "error": self.error,
             "transport": self.transport,
+            "book_status": self.book_status,
+            "book_error": self.book_error,
         }
 
 

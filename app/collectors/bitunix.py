@@ -3,11 +3,12 @@ import time
 
 import aiohttp
 
-from app.collectors.base import NotListed, Stream, TradesCallback, get_json, ws_loop
+from app.collectors.base import NotListed, Stream, TradesCallback, get_json, parse_levels, ws_loop
 from app.models import Trade
 
 PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 WS_URL = "wss://fapi.bitunix.com/public/"
+DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
 
 
 class BitunixStream(Stream):
@@ -28,6 +29,11 @@ class BitunixStream(Stream):
                 self.mult = float(prefix or 1)  # "base" field says PEPE even for 1000PEPEUSDT
                 return
         raise NotListed
+
+    async def fetch_book(self) -> tuple[list, list]:
+        data = await get_json(self.session, DEPTH_URL, {"symbol": self.symbol, "limit": "50"})
+        book = data.get("data") or {}  # qty in base units
+        return parse_levels(book.get("bids"), 1.0, self.mult), parse_levels(book.get("asks"), 1.0, self.mult)
 
     def _on_msg(self, msg) -> None:
         if not isinstance(msg, dict) or msg.get("ch") != "trade":

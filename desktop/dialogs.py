@@ -35,12 +35,14 @@ class OverlaySettingsDialog(QDialog):
 
     changed = Signal(object)
 
-    def __init__(self, prefs: OverlayPrefs, snapshot: dict, parent: QWidget | None = None):
+    def __init__(self, prefs: OverlayPrefs, snapshot: dict, parent: QWidget | None = None,
+                 coin: str = "", walls: bool = True):
+        """walls=False: an extra coin's overlay (its tape has no order-book analysis)."""
         super().__init__(parent, Qt.WindowType.WindowStaysOnTopHint)
-        self.setWindowTitle("Оверлей: биржи и фильтры")
         self.prefs = copy.deepcopy(prefs)
         status = {s["key"]: s.get("status", "") for s in snapshot.get("streams") or []}
-        coin = snapshot.get("coin") or ""
+        coin = coin or snapshot.get("coin") or ""
+        self.setWindowTitle(f"Оверлей {coin}: биржи и фильтры".replace("  ", " "))
 
         root = QVBoxLayout(self)
 
@@ -107,8 +109,19 @@ class OverlaySettingsDialog(QDialog):
         self.highlight.setChecked(self.prefs.highlight_repeats)
         ff.addRow("Сделки от", self.min_usd)
         ff.addRow("Сторона", self.side)
+        self.show_walls = QCheckBox("показывать плиты: крупные заявки у цены (поставили / переставили / сняли)")
+        self.show_walls.setChecked(self.prefs.show_walls)
+        self.wall_min = QDoubleSpinBox(prefix="$ ", decimals=0, maximum=1_000_000_000, singleStep=10_000)
+        self.wall_min.setValue(self.prefs.wall_min_usd)
+        self.wall_min.setSpecialValueText("как в настройках детектора")
         ff.addRow("", self.only_repeats)
         ff.addRow("", self.highlight)
+        if walls:
+            ff.addRow("", self.show_walls)
+            ff.addRow("Плиты от", self.wall_min)
+        else:
+            self.show_walls.hide()
+            self.wall_min.hide()
         root.addWidget(filt)
 
         # --- look -----------------------------------------------------------
@@ -135,12 +148,12 @@ class OverlaySettingsDialog(QDialog):
         lf.addRow("Строк в памяти", self.max_rows)
         root.addWidget(look)
 
-        for w in (self.min_usd, self.big_mult):
+        for w in (self.min_usd, self.big_mult, self.wall_min):
             w.valueChanged.connect(self._emit)
         for w in (self.font_size, self.max_rows, self.opacity):
             w.valueChanged.connect(self._emit)
         self.side.currentIndexChanged.connect(self._emit)
-        for cb in (self.only_repeats, self.highlight, self.show_time, self.show_price, self.show_qty):
+        for cb in (self.only_repeats, self.highlight, self.show_walls, self.show_time, self.show_price, self.show_qty):
             cb.toggled.connect(self._emit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -163,6 +176,8 @@ class OverlaySettingsDialog(QDialog):
         p.side = self.side.currentData()
         p.only_repeats = self.only_repeats.isChecked()
         p.highlight_repeats = self.highlight.isChecked()
+        p.show_walls = self.show_walls.isChecked()
+        p.wall_min_usd = self.wall_min.value()
         p.font_size = self.font_size.value()
         p.opacity = self.opacity.value() / 100
         p.show_time = self.show_time.isChecked()

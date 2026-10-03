@@ -5,10 +5,11 @@ from datetime import datetime
 
 import aiohttp
 
-from app.collectors.base import NotListed, Stream, TradesCallback, get_json, ws_loop
+from app.collectors.base import NotListed, Stream, TradesCallback, get_json, parse_levels, ws_loop
 from app.models import Trade
 
 SPOT_REST = "https://api-cloud.bitmart.com/spot/quotation/v3/trades"
+SPOT_BOOK = "https://api-cloud.bitmart.com/spot/quotation/v3/books"
 SPOT_WS = "wss://ws-manager-compress.bitmart.com/api?protocol=1.1"
 PERP_REST = "https://api-cloud-v2.bitmart.com/contract/public"
 PERP_WS = "wss://openapi-ws-v2.bitmart.com/api?protocol=1.1"
@@ -66,6 +67,16 @@ class BitmartStream(Stream):
                 side = "sell" if t.get("is_buyer_maker") else "buy"
                 trades.append(Trade(float(t["time"]), p / self.mult, q * self.mult, p * q, side))
         self.emit_seed(trades)
+
+    async def fetch_book(self) -> tuple[list, list]:
+        if self.kind == "spot":
+            data = await get_json(self.session, SPOT_BOOK, {"symbol": self.symbol, "limit": 50})
+            book = data.get("data") or {}
+            return parse_levels(book.get("bids")), parse_levels(book.get("asks"))
+        data = await get_json(self.session, f"{PERP_REST}/depth", {"symbol": self.symbol})
+        book = data.get("data") or {}  # volumes in contracts
+        cs, mult = self.contract_size, self.mult
+        return parse_levels(book.get("bids"), cs, mult), parse_levels(book.get("asks"), cs, mult)
 
     def _on_spot(self, msg) -> None:
         if not isinstance(msg, dict) or msg.get("table") != "spot/trade":
