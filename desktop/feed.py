@@ -22,15 +22,17 @@ class Feed(QObject):
     snapshot = Signal(dict)
     alert = Signal(dict)
     coin_changed = Signal(str)
+    watch_changed = Signal(list)  # extra coins on the server
     connection = Signal(bool, str)  # connected, error text
     request_failed = Signal(str)
 
-    def __init__(self, base_url: str, token: str = ""):
+    def __init__(self, base_url: str, token: str = "", coin: str | None = None):
+        """coin=None follows the main coin; a ticker subscribes to that watched coin's tape."""
         super().__init__()
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.last_snapshot: dict = {}
-        self._filter: dict = {"type": "filter", "min_usd": 1000.0, "keys": [], "lite": True}
+        self._filter: dict = {"type": "filter", "min_usd": 1000.0, "keys": [], "lite": True, "coin": coin}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -56,13 +58,22 @@ class Feed(QObject):
         if self._thread:
             self._thread.join(5)
 
-    def set_filter(self, min_usd: float, keys: list[str], walls: bool = True) -> None:
-        self._filter = {**self._filter, "min_usd": float(min_usd), "keys": list(keys), "walls": walls}
+    def set_filter(self, min_usd: float, keys: list[str], walls: bool = True, **extra) -> None:
+        self._filter = {**self._filter, "min_usd": float(min_usd), "keys": list(keys), "walls": walls, **extra}
         if self._loop:
             self._loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._send_filter()))
 
+    def follow(self, coin: str | None) -> None:
+        """Switch this feed to another watched coin (None = the main coin)."""
+        self.set_filter(self._filter["min_usd"], self._filter["keys"], self._filter.get("walls", True), coin=coin)
+
     def set_coin(self, coin: str) -> None:
+        """Change the server's main coin."""
         self._request("POST", "/api/coin", {"coin": coin})
+
+    def put_watch(self, coins: list[str]) -> None:
+        """Extra coins the server should collect trades for."""
+        self._request("PUT", "/api/watch", {"coins": coins})
 
     # ---- feed thread -----------------------------------------------------
     def _main(self) -> None:
@@ -117,6 +128,8 @@ class Feed(QObject):
             self.snapshot.emit(msg)
         elif kind == "alert":
             self.alert.emit(msg.get("alert") or {})
+        elif kind == "watch":
+            self.watch_changed.emit(msg.get("coins") or [])
         elif kind == "coin":
             self.coin_changed.emit(msg.get("coin") or "")
 

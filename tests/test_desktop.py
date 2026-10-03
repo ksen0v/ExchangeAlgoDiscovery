@@ -127,3 +127,20 @@ def test_wall_text_starts_with_what_happened():
 
     w = WallRow(NOW, "KuCoin", "spot", "ask", 65_000.0, 251_000.0, 5.0, "pulled")
     assert wall_text(w).startswith("▼ СНЯЛИ $251k @65,000.0")
+
+
+def test_extra_coins_load_dedup_and_limit(tmp_path):
+    path = tmp_path / "desktop.json"
+    path.write_text(json.dumps({"extra": [
+        {"coin": "pepe", "visible": False, "overlay": {"min_usd": 500, "keys": ["MEXC:spot"]}},
+        {"coin": "PEPE"},  # duplicate
+        {"coin": "bad-1"},  # not a ticker
+        "junk",
+        {"coin": "SOL"},
+        {"coin": "WIF"},  # over the limit of two extra coins
+    ]}), "utf-8")
+    p = Prefs.load(path)
+    assert [e.coin for e in p.extra] == ["PEPE", "SOL"]
+    assert p.extra[0].visible is False and p.extra[0].overlay.keys == ["MEXC:spot"] and p.extra[0].overlay.min_usd == 500
+    p.save(path)
+    assert [e.coin for e in Prefs.load(path).extra] == ["PEPE", "SOL"]
