@@ -91,6 +91,10 @@ class CcxtStream(Stream):
         self.transport = "ws" if self.ex.has.get("watchTrades") else "rest"
         self.ws_book = self.transport == "ws" and bool(self.ex.has.get("watchOrderBook"))
 
+    async def close(self) -> None:
+        ex, self.ex = self.ex, None
+        await self.pool.release(ex)
+
     def _idle_limit(self) -> float:
         """Silence after which the socket is assumed dead: short for busy markets."""
         t = self._trade_times

@@ -54,10 +54,11 @@ def _x(i: str) -> Source:
     return Source("custom", i)
 
 
-# Top-30 venues by spot + derivatives volume (CoinGecko / CoinMarketCap, 2026).
-# Four of them are not in ccxt and are implemented by hand in app/collectors/.
+# Top-30 venues by spot + derivatives volume (CoinGecko / CoinMarketCap, 2026) + Binance Alpha.
+# Five of them are not in ccxt and are implemented by hand in app/collectors/.
 VENUES: list[Venue] = [
     Venue("Binance", _c("binance"), _c("binanceusdm")),
+    Venue("Binance Alpha", _x("binance_alpha"), None),  # early-stage tokens in the Binance app
     Venue("Bybit", _c("bybit"), _c("bybit")),
     Venue("OKX", _c("okx"), _c("okx")),
     Venue("Coinbase", _c("coinbaseexchange"), None),

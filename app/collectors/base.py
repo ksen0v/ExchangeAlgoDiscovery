@@ -86,6 +86,9 @@ class Stream:
         """Emit trades forever; return/raise to reconnect."""
         raise NotImplementedError
 
+    async def close(self) -> None:
+        """Release connections after the task is cancelled (ccxt instances)."""
+
     async def fetch_book(self) -> tuple[list, list]:
         """REST depth -> (bids, asks) via parse_levels. Venues without it have no book."""
         raise NotImplementedError

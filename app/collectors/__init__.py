@@ -1,6 +1,7 @@
 import aiohttp
 
 from app.collectors.base import Stream, TradesCallback
+from app.collectors.binance_alpha import BinanceAlphaStream
 from app.collectors.bitmart import BitmartStream
 from app.collectors.bitunix import BitunixStream
 from app.collectors.ccxt_stream import CcxtPool, CcxtStream
@@ -10,6 +11,7 @@ from app.collectors.ourbit import OurbitStream
 from app.config import Source, settings
 
 CUSTOM = {
+    "binance_alpha": BinanceAlphaStream,
     "bitmart": BitmartStream,
     "coinw": CoinwStream,
     "bitunix": BitunixStream,
