@@ -60,6 +60,7 @@ class DemoStream(Stream):
         self.level_usd = self.median_usd * rnd.uniform(2, 6)
         self.wall: dict | None = None
         self.wall_at = time.time() + rnd.uniform(10, 240)
+        self.mm = rnd.random() < 0.2  # a market maker holding big quotes on both sides
 
     async def resolve(self) -> None:
         await asyncio.sleep(random.uniform(0.2, 1.5))
@@ -115,6 +116,10 @@ class DemoStream(Stream):
                 "ticks": random.randint(2, 8),
                 "end": now + random.uniform(20, 90),
             }
+        if self.mm:
+            big = self.level_usd * 30
+            bids.append((mid - tick * 10.5, big * random.uniform(0.95, 1.05)))
+            asks.append((mid + tick * 10.5, big * random.uniform(0.95, 1.05)))
         w = self.wall
         if w:
             if now > w["end"]:

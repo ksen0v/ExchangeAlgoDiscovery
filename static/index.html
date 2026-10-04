@@ -46,7 +46,7 @@
             <th class="r" title="Во сколько раз темп объёма выше базы">×База</th>
             <th class="r" title="Доля агрессивных покупок">Покупки</th>
             <th title="Серия одинаковых сделок в одну сторону">Алго</th>
-            <th title="Крупная заявка у цены (плита): сторона, размер, расстояние до цены. ⇡N — переставляли за ценой, ↯N — сняли без исполнения за 2 мин">Плита</th>
+            <th title="Крупная заявка у цены (плита): сторона, размер, расстояние до цены. ⇡N — переставляли за ценой, ↯N — сняли без исполнения за 2 мин, ММ — плотности маркетмейкера. Клик по ячейке — свои настройки плит для этой биржи">Плита</th>
             <th class="r" title="Доля в объёме всех бирж за окно">Доля</th>
             <th class="r">Скор</th>
             <th title="Объём за 5 минут, 10-секундные бары: вверх покупки, вниз продажи">5 мин</th>
@@ -103,6 +103,26 @@
       <span class="spacer"></span>
       <button value="cancel" class="ghost">Отмена</button>
       <button type="submit" id="saveSettings" value="save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="wallDlg">
+  <form method="dialog" id="wallForm">
+    <h3 id="wallDlgTitle">Плиты</h3>
+    <p class="muted small">Только для этой биржи и этой монеты. Например, у маркетмейкера на бирже
+      постоянно стоят плотности по $1M — их можно не считать плитами.</p>
+    <label class="check"><input type="radio" name="mode" value="common"> <span id="wallCommon">как в общих настройках</span></label>
+    <label class="check"><input type="radio" name="mode" value="off"> не искать плиты на этой бирже</label>
+    <label class="check"><input type="radio" name="mode" value="own"> свои пороги:</label>
+    <div class="grid">
+      <label>Плита от, $<input name="min_usd" type="number" step="any" min="0"><small>пусто — как в общих</small></label>
+      <label>× к стакану<input name="ratio" type="number" step="any" min="2"><small>пусто — как в общих</small></label>
+    </div>
+    <div class="dlg-actions">
+      <span class="spacer"></span>
+      <button value="cancel" class="ghost">Отмена</button>
+      <button type="submit" value="save">Сохранить</button>
     </div>
   </form>
 </dialog>

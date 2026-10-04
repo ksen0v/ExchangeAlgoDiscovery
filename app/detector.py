@@ -61,6 +61,7 @@ class DetectorConfig:
     wall_min_usd: float = 20_000
     wall_ratio: float = 8.0  # times the median level of the same book
     wall_band_bps: float = 50  # how close to the mid price (50 bps = 0.5 %)
+    wall_ignore_mm: bool = True  # symmetric big quotes on both sides = market maker, not a wall
 
     def update(self, data: dict) -> None:
         """Apply known fields; raises ValueError and changes nothing if any value is invalid."""
@@ -198,6 +199,8 @@ class Detector:
         self.states: dict[str, StreamState] = {}
         self.consensus: float | None = None
         self.walls = WallTracker()
+        # coin -> stream key -> {"off": bool, "min_usd": float | None, "ratio": float | None}
+        self.wall_overrides: dict[str, dict[str, dict]] = {}
 
     @property
     def keep_sec(self) -> int:
@@ -231,9 +234,21 @@ class Detector:
         cfg = self.cfg
         if not cfg.walls:
             return []
+        o = self.wall_override(key)
+        if o.get("off"):
+            self.walls.forget(key)
+            return []
         if key not in self.states:  # a book before the first trade still gets metrics
             self.states[key] = StreamState()
-        return self.walls.update(key, ts, bids, asks, cfg.wall_min_usd, cfg.wall_ratio, cfg.wall_band_bps)
+        return self.walls.update(
+            key, ts, bids, asks,
+            o.get("min_usd") or cfg.wall_min_usd, o.get("ratio") or cfg.wall_ratio, cfg.wall_band_bps,
+            ignore_mm=cfg.wall_ignore_mm,
+        )
+
+    def wall_override(self, key: str) -> dict:
+        """This venue's own wall settings for the current coin ({} = the common ones)."""
+        return self.wall_overrides.get(self.coin, {}).get(key) or {}
 
     def mark_connected(self, key: str, since: float) -> None:
         """A live stream with no trades still proves 'nothing happened' since `since`."""
@@ -279,7 +294,9 @@ class Detector:
         for key, st in self.states.items():
             buy, sell, unk, n, vol_w, vol_b = raw[key]
             m = self._stream_metrics(st, now, now_sec, b_lo, b_hi, buy, sell, n, vol_w, vol_b, cons, cons_ret)
-            m.update(self.walls.state(key, now) if self.cfg.walls else {"wall": None, "pulls": 0, "book": False})
+            m.update(self.walls.state(key, now, self.cfg.wall_ignore_mm) if self.cfg.walls
+                     else {"wall": None, "pulls": 0, "book": False, "mm": None})
+            m["wall_override"] = self.wall_override(key) or None
             m["share"] = vol_w / total_w if total_w else None
             m["share_base"] = vol_b / total_b if total_b else None
             self._score(m)

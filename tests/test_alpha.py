@@ -48,3 +48,31 @@ def test_unknown_ticker_is_not_listed(fake_api):
 def test_error_payload_raises():
     with pytest.raises(ValueError):
         ba.payload({"code": "100001", "success": False, "message": "symbol not found"})
+
+
+def test_taker_side_from_any_field_format():
+    ts = ba.taker_side
+    assert ts({"m": True}) == "sell" and ts({"m": False}) == "buy"
+    assert ts({"m": "true"}) == "sell" and ts({"m": "false"}) == "buy"
+    assert ts({"isBuyerMaker": 1}) == "sell" and ts({"isBuyerMaker": 0}) == "buy"
+    assert ts({"side": "SELL"}) == "sell" and ts({"S": "Buy"}) == "buy"
+    assert ts({"isBuy": False}) == "sell"
+    assert ts({"p": "1"}) is None
+
+
+def test_tick_rule_when_feed_has_no_side(fake_api, monkeypatch):
+    rows = {"code": "000000", "data": [
+        {"a": 1, "p": "10", "q": "1", "T": 1_000},
+        {"a": 2, "p": "11", "q": "1", "T": 2_000},  # uptick: buy
+        {"a": 3, "p": "9", "q": "1", "T": 3_000},  # downtick: sell
+        {"a": 4, "p": "9", "q": "1", "T": 4_000},  # same price: same as before
+    ]}
+
+    async def get_json(_session, url, params=None):
+        return TOKENS if url == ba.TOKENS_URL else rows
+
+    monkeypatch.setattr(ba, "get_json", get_json)
+    s = ba.BinanceAlphaStream("Binance Alpha", "spot", "KOGE", lambda *a: None, session=None)
+    asyncio.run(s.resolve())
+    sides = [t.side for _, t in asyncio.run(s.fetch_trades())]
+    assert sides[1:] == ["buy", "sell", "sell"]
