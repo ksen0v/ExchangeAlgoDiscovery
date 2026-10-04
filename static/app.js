@@ -91,6 +91,11 @@ function sparkSvg(spark) {
 }
 
 function wallCell(s) {
+  const o = s.wall_override;
+  const gear = o ? ` <span class="gear" title="Свои настройки плит для этой биржи">⚙</span>` : "";
+  if (o && o.off) return `<span class="dim" title="Плиты на этой бирже не ищутся (своя настройка). Клик — изменить">выкл ⚙</span>`;
+  const mm = s.mm
+    ? ` <span class="dim" title="С обеих сторон долго стоят плотности похожего размера — это маркетмейкер, не плита">ММ ▲${fmtUsd(s.mm.bid)} ▼${fmtUsd(s.mm.ask)}</span>` : "";
   const pulls = s.pulls
     ? ` <span class="warn" title="Сняли без исполнения за 2 мин: ${s.pulls} плит на ${fmtUsd(s.pulled_usd)}">↯${s.pulls}</span>` : "";
   const w = s.wall;
@@ -101,12 +106,42 @@ function wallCell(s) {
       + (w.moves ? `, переставляли ${w.moves}× (за ценой ${w.push}×)` : "");
     const push = w.push ? ` <span class="push">${bid ? "⇡" : "⇣"}${w.push}</span>` : "";
     return `<span class="${bid ? "pos" : "neg"}" title="${esc(title)}">${bid ? "▲" : "▼"}${fmtUsd(w.usd)} `
-      + `<span class="dim">${(w.dist_bps / 100).toFixed(2)}%</span></span>${push}${pulls}`;
+      + `<span class="dim">${(w.dist_bps / 100).toFixed(2)}%</span></span>${push}${pulls}${mm}${gear}`;
   }
-  if (pulls) return pulls.trim();
+  if (pulls || mm) return (pulls + mm + gear).trim();
   if (s.book_status === "error") return `<span class="dim" title="Стакан: ${esc(s.book_error)}">стакан ⚠</span>`;
-  return '<span class="dim">—</span>';
+  return `<span class="dim">—</span>${gear}`;
 }
+
+// ---------- per-venue wall settings (click on the "Плита" cell) ----------
+let wallDlgKey = "";
+function openWallDlg(key) {
+  const s = S.streams.find((x) => x.key === key) || {};
+  const o = s.wall_override || {};
+  const [venue, kind] = splitKey(key);
+  wallDlgKey = key;
+  $("wallDlgTitle").textContent = `Плиты: ${venue} ${kind === "perp" ? "фьючерс" : "спот"} · ${S.coin}`;
+  $("wallCommon").textContent = `как в общих настройках (от ${fmtUsd(S.config.wall_min_usd)}, ×${S.config.wall_ratio} к стакану)`;
+  const f = $("wallForm").elements;
+  f.mode.value = o.off ? "off" : (o.min_usd || o.ratio) ? "own" : "common";
+  f.min_usd.value = o.min_usd ?? "";
+  f.ratio.value = o.ratio ?? "";
+  $("wallDlg").showModal();
+}
+$("wallForm").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "save") return;
+  const f = $("wallForm").elements;
+  const own = f.mode.value === "own";
+  const num = (v) => (v === "" ? null : Number(v));
+  const body = { key: wallDlgKey, coin: S.coin, off: f.mode.value === "off",
+    min_usd: own ? num(f.min_usd.value) : null, ratio: own ? num(f.ratio.value) : null };
+  try {
+    await api("/api/wall-overrides", { method: "PUT", body: JSON.stringify(body) });
+    toast("Настройка плит для биржи сохранена");
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 function isActive(s) {
   return (s.status === "live" || s.status === "polling") && s.price != null;
@@ -169,6 +204,11 @@ function renderStreams() {
 }
 
 $("streamsBody").addEventListener("click", (e) => {
+  const cell = e.target.closest("td.wallcell");
+  if (cell) {
+    openWallDlg(cell.closest("tr[data-key]").dataset.key);
+    return;
+  }
   const tr = e.target.closest("tr[data-key]");
   if (!tr) return;
   toggleSelected(tr.dataset.key);
@@ -413,6 +453,8 @@ function openSettings() {
   $("settingsGrid").innerHTML = FIELDS.map(([k, label, hint]) =>
     `<label>${label}<input name="${k}" type="number" step="any" value="${c[k]}"><small>${hint}</small></label>`).join("")
     + `<label class="check"><input name="walls" type="checkbox" ${c.walls ? "checked" : ""}> Искать плиты в стаканах</label>`
+    + `<label class="check"><input name="wall_ignore_mm" type="checkbox" ${c.wall_ignore_mm ? "checked" : ""}> Не считать плитами плотности маркетмейкера (с обеих сторон, похожего размера)</label>`
+    + `<p class="muted small">Пороги плит для отдельной биржи — клик по ячейке «Плита» в таблице.</p>`
     + `<label class="check"><input name="telegram" type="checkbox" ${c.telegram ? "checked" : ""}> Отправлять алерты в Telegram</label>`;
   $("tgStatus").textContent = S.telegram
     ? "Telegram настроен."
@@ -426,6 +468,7 @@ $("settingsForm").addEventListener("submit", async (e) => {
   for (const [k] of FIELDS) body[k] = Number($("settingsForm").elements[k].value);
   body.telegram = $("settingsForm").elements.telegram.checked;
   body.walls = $("settingsForm").elements.walls.checked;
+  body.wall_ignore_mm = $("settingsForm").elements.wall_ignore_mm.checked;
   try {
     S.config = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
     toast("Настройки сохранены");

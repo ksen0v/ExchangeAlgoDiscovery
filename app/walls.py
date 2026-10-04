@@ -12,6 +12,10 @@ participant does with them:
            spoof-like, it was there only to lean on the price
   eaten  - traded through (trades at its price or the price went past it)
 
+Market-maker quotes are not walls: big orders standing on BOTH sides for a while
+with similar sizes (e.g. $1M above and $1M below to hold the price) are marked
+`mm` and, with ignore_mm, produce no events and no wall metrics.
+
 Prices are USD per coin and sizes are USD, like trades (see app/models.Trade).
 """
 import itertools
@@ -31,6 +35,8 @@ DEPTH = 50  # levels per side analysed
 BASE_LEVELS = 20  # levels per side for the typical-level median
 RECENT_SEC = 120  # window for "pulled lately" counters
 STALE_SEC = 15  # no book for this long: no wall metrics
+MM_MIN_AGE = 30.0  # s both sides must stand to count as a market maker's pair
+MM_SIZE_RATIO = 2.0  # ...with the bigger side at most twice the smaller
 EVENTS_KEEP = 300
 
 Levels = list[tuple[float, float]]  # (price per coin in USD, size in USD), best first
@@ -52,6 +58,7 @@ class Wall:
     push: int = 0  # moves towards the market: bid up / ask down
     traded: float = 0.0
     confirmed: bool = False
+    mm: bool = False  # one side of a market maker's symmetric pair
     moved_at: float = 0.0  # last "moved" event
     moved_from: float = 0.0  # price at that event
 
@@ -77,13 +84,17 @@ class WallTracker:
         self._ids = itertools.count(1)
         self.recent: deque[dict] = deque(maxlen=EVENTS_KEEP)
 
+    def forget(self, key: str) -> None:
+        """Drop a stream's walls (analysis switched off for it)."""
+        self._books.pop(key, None)
+
     def reset(self) -> None:
         self._books = {}
         self.recent.clear()
 
     # ---- input -----------------------------------------------------------
     def update(self, key: str, ts: float, bids: Levels, asks: Levels,
-               min_usd: float, ratio: float, band_bps: float) -> list[dict]:
+               min_usd: float, ratio: float, band_bps: float, ignore_mm: bool = False) -> list[dict]:
         bids = sorted((lv for lv in bids if lv[0] > 0 and lv[1] > 0), reverse=True)[:DEPTH]
         asks = sorted(lv for lv in asks if lv[0] > 0 and lv[1] > 0)[:DEPTH]
         if not bids or not asks or asks[0][0] <= bids[0][0]:
@@ -161,7 +172,8 @@ class WallTracker:
             crossed = bb < w.price * (1 - PRICE_TOL) if w.side == "bid" else ba > w.price * (1 + PRICE_TOL)
             kind = "eaten" if crossed or w.traded >= 0.3 * w.usd_max else "pulled"
             events.append(self._event(key, kind, w, ts))
-            st.history.append((ts, kind, w.usd_max))
+            if not (ignore_mm and w.mm):
+                st.history.append((ts, kind, w.usd_max))
         st.walls = keep
 
         # 4. new candidates
@@ -176,8 +188,23 @@ class WallTracker:
                 w.confirmed = True
                 events.append(self._event(key, "new", w, ts))
 
+        self._mark_mm(st, ts)
+        if ignore_mm:
+            mm = {w.id for w in st.walls if w.mm} | {e["id"] for e in events if e.get("mm")}
+            events = [e for e in events if e["id"] not in mm]
         self.recent.extend(events)
         return events
+
+    @staticmethod
+    def _mark_mm(st: _Book, ts: float) -> None:
+        live = [w for w in st.walls if w.confirmed and w.seen_ts == ts]
+        bid = max((w for w in live if w.side == "bid"), key=lambda w: w.usd, default=None)
+        ask = max((w for w in live if w.side == "ask"), key=lambda w: w.usd, default=None)
+        if not bid or not ask or bid.mm and ask.mm:
+            return
+        stood = min(ts - bid.first_ts, ts - ask.first_ts) >= MM_MIN_AGE
+        if stood and max(bid.usd, ask.usd) <= MM_SIZE_RATIO * min(bid.usd, ask.usd):
+            bid.mm = ask.mm = True
 
     def on_trades(self, key: str, trades: list[Trade]) -> None:
         """Trades at or through a wall's price count as execution against it."""
@@ -194,15 +221,20 @@ class WallTracker:
                     w.traded += t.usd
 
     # ---- output ----------------------------------------------------------
-    def state(self, key: str, now: float | None = None) -> dict:
+    def state(self, key: str, now: float | None = None, ignore_mm: bool = False) -> dict:
         now = now or time.time()
         st = self._books.get(key)
         if not st or now - st.ts > STALE_SEC:
-            return {"book": False, "spread_bps": None, "wall": None, "pulls": 0, "pulled_usd": 0.0}
+            return {"book": False, "spread_bps": None, "wall": None, "pulls": 0, "pulled_usd": 0.0, "mm": None}
         while st.history and st.history[0][0] < now - RECENT_SEC:
             st.history.popleft()
         pulled = [u for _, kind, u in st.history if kind == "pulled"]
         live = [w for w in st.walls if w.confirmed and w.seen_ts == st.ts]
+        pair = [w for w in live if w.mm]
+        mm = None
+        if pair and ignore_mm:
+            mm = {s: max((w.usd for w in pair if w.side == s), default=0.0) for s in ("bid", "ask")}
+            live = [w for w in live if not w.mm]
         top = max(live, key=lambda w: w.usd, default=None)
         wall = None
         if top:
@@ -222,6 +254,7 @@ class WallTracker:
             "wall": wall,
             "pulls": len(pulled),
             "pulled_usd": sum(pulled),
+            "mm": mm,
         }
 
     def _event(self, key: str, kind: str, w: Wall, ts: float, **extra) -> dict:
@@ -238,5 +271,6 @@ class WallTracker:
             "age": round(ts - w.first_ts, 1),
             "moves": w.moves,
             "push": w.push,
+            "mm": w.mm,
             **extra,
         }

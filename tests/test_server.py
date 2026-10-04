@@ -100,3 +100,18 @@ def test_ws_client_of_a_watched_coin_gets_only_that_coin(client):
             if snap and trades:
                 break
         assert snap and trades and seen == {"WIF"}
+
+
+def test_wall_override_per_venue_and_coin(client):
+    r = client.put("/api/wall-overrides", json={"key": "WEEX:perp", "off": True})
+    assert r.status_code == 200 and r.json()["overrides"]["WEEX:perp"]["off"] is True
+    r = client.put("/api/wall-overrides", json={"key": "Gate:spot", "min_usd": 500000, "ratio": 20})
+    assert r.json()["overrides"]["Gate:spot"] == {"off": False, "min_usd": 500000, "ratio": 20}
+    assert client.put("/api/wall-overrides", json={"key": "Gate:spot", "ratio": 0.5}).status_code == 400
+    # other coins are not affected
+    assert client.get("/api/wall-overrides?coin=PEPE").json()["overrides"] == {}
+    from app import main as m
+    assert m.S.detector.ingest_book("WEEX:perp", 1.0, [(1.0, 1e9)], [(1.1, 1.0)]) == []
+    # back to the common settings
+    r = client.put("/api/wall-overrides", json={"key": "WEEX:perp"})
+    assert "WEEX:perp" not in r.json()["overrides"]

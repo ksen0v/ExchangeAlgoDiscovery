@@ -15,7 +15,7 @@ from starlette.requests import HTTPConnection
 
 from app.collectors.base import http_session
 from app.config import VENUES, settings
-from app.detector import Detector, DetectorConfig
+from app.detector import LIMITS, Detector, DetectorConfig
 from app.fx import run_fx_updater
 from app.hub import Client, Hub
 from app.manager import MAX_WATCH, Manager
@@ -94,6 +94,8 @@ async def lifespan(_: FastAPI):
     except (TypeError, ValueError) as e:
         log.warning("saved detector settings ignored: %s", e)
     S.detector = Detector(cfg, settings.history_sec)
+    overrides = await S.storage.get("wall_overrides", {})
+    S.detector.wall_overrides = overrides if isinstance(overrides, dict) else {}
     S.hub = Hub()
     S.telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
     session = http_session()
@@ -233,6 +235,43 @@ async def put_config(body: dict) -> dict:
 @app.get("/api/alerts")
 async def get_alerts(coin: str | None = None, limit: int = 200) -> list[dict]:
     return await S.storage.alerts(coin.upper() if coin else None, min(limit, 1000))
+
+
+class WallOverrideIn(BaseModel):
+    key: str  # stream, e.g. "WEEX:perp"
+    coin: str | None = None  # default: the main coin
+    off: bool = False  # do not look for walls on this venue
+    min_usd: float | None = None  # own "wall from $"
+    ratio: float | None = None  # own "x the typical level"
+
+
+@app.get("/api/wall-overrides")
+async def get_wall_overrides(coin: str | None = None) -> dict:
+    coin = (coin or S.manager.coin).upper()
+    return {"coin": coin, "overrides": S.detector.wall_overrides.get(coin, {})}
+
+
+@app.put("/api/wall-overrides")
+async def put_wall_override(body: WallOverrideIn) -> dict:
+    """Per venue and coin: no wall search, or own thresholds (market makers' quotes differ by venue)."""
+    coin = (body.coin or S.manager.coin).strip().upper()
+    if not coin.isalnum() or ":" not in body.key or len(body.key) > 60:
+        raise HTTPException(400, "Неверная биржа или монета")
+    for name, value in (("wall_min_usd", body.min_usd), ("wall_ratio", body.ratio)):
+        lo, hi = LIMITS[name]
+        if value is not None and not lo <= value <= hi:
+            raise HTTPException(400, f"{'Плита от, $' if name == 'wall_min_usd' else '× к стакану'}: от {lo:g} до {hi:g}")
+    per_coin = S.detector.wall_overrides.setdefault(coin, {})
+    if body.off or body.min_usd is not None or body.ratio is not None:
+        per_coin[body.key] = {"off": body.off, "min_usd": body.min_usd, "ratio": body.ratio}
+    else:
+        per_coin.pop(body.key, None)  # back to the common settings
+    if not per_coin:
+        S.detector.wall_overrides.pop(coin, None)
+    if coin == S.manager.coin:
+        S.detector.walls.forget(body.key)  # re-detect with the new thresholds
+    await S.storage.set("wall_overrides", S.detector.wall_overrides)
+    return {"coin": coin, "overrides": S.detector.wall_overrides.get(coin, {})}
 
 
 @app.get("/api/walls")

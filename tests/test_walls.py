@@ -84,7 +84,7 @@ def test_stale_book_has_no_metrics():
     tr = WallTracker()
     for t in range(3):
         run(tr, T0 + t, wall=("bid", 99.97, 50_000))
-    assert tr.state(KEY, T0 + 60) == {"book": False, "spread_bps": None, "wall": None, "pulls": 0, "pulled_usd": 0.0}
+    assert tr.state(KEY, T0 + 60) == {"book": False, "spread_bps": None, "wall": None, "pulls": 0, "pulled_usd": 0.0, "mm": None}
 
 
 def test_detector_scores_a_pushing_wall_and_explains_it():
@@ -140,3 +140,34 @@ def test_hub_sends_walls_to_clients_that_want_them():
     hub.push_walls([{"key": KEY, "usd": 1.0, "event": "new"}])
     hub.flush_tape()
     assert a.queue.empty()
+
+
+def test_market_maker_pair_is_not_a_wall():
+    tr = WallTracker()
+    both = book()
+    bids, asks = both
+    bids.append((99.96, 60_000))
+    asks.append((100.04, 50_000))
+    events = []
+    for t in range(0, 40, 2):
+        events += tr.update(KEY, T0 + t, list(bids), list(asks), **ARGS, ignore_mm=True)
+    st = tr.state(KEY, T0 + 38, ignore_mm=True)
+    assert st["wall"] is None and st["mm"] == {"bid": 60_000, "ask": 50_000}
+    # pulling a market maker's quote is not a spoof
+    bids.remove((99.96, 60_000))
+    for t in (40, 42):
+        events += tr.update(KEY, T0 + t, list(bids), list(asks), **ARGS, ignore_mm=True)
+    assert not [e for e in events if e["event"] == "pulled"]
+    assert tr.state(KEY, T0 + 42, ignore_mm=True)["pulls"] == 0
+    # without the option the same book reports walls
+    tr2 = WallTracker()
+    for t in range(0, 40, 2):
+        tr2.update(KEY, T0 + t, *book(wall=("bid", 99.96, 60_000)), **ARGS)
+    assert tr2.state(KEY, T0 + 38)["wall"]["usd"] == 60_000
+
+
+def test_one_sided_wall_is_still_a_wall_with_mm_option():
+    tr = WallTracker()
+    for t in range(0, 40, 2):
+        tr.update(KEY, T0 + t, *book(wall=("bid", 99.97, 50_000)), **ARGS, ignore_mm=True)
+    assert tr.state(KEY, T0 + 38, ignore_mm=True)["wall"]["usd"] == 50_000

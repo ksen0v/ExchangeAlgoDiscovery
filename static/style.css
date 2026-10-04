@@ -193,6 +193,10 @@ details.inactive summary { cursor: pointer; }
 .walls-list .eaten .ev { color: var(--muted); }
 .wallcell { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
 .wallcell .push { color: #8fb3ff; font-weight: 700; }
+.wallcell { cursor: pointer; }
+.wallcell:hover { background: var(--panel-2); }
+.wallcell .gear { color: var(--accent); }
+#wallDlg .check { display: block; margin: 6px 0; }
 .warn { color: var(--warn); font-weight: 700; }
 .alert-reasons { margin: 3px 0 0; padding-left: 16px; color: var(--text-2); font-size: 12px; }
 .empty { padding: 16px 12px; color: var(--muted); }
