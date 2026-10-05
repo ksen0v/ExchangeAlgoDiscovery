@@ -119,6 +119,7 @@ class BinanceAlphaStream(Stream):
             if p <= 0 or q <= 0:
                 continue
             side = taker_side(t)
+            inferred = side is None
             if side is None:  # no side in the feed: tick rule (uptick = buy, downtick = sell)
                 if self._last_price and p != self._last_price:
                     side = "buy" if p > self._last_price else "sell"
@@ -127,7 +128,7 @@ class BinanceAlphaStream(Stream):
             self._last_price, self._last_side = p, side
             ts = num(t.get("T")) / 1000 or time.time()
             key = t.get("a") or (t.get("T"), t.get("p"), t.get("q"))
-            out.append((key, Trade(ts, p, q, p * q, side)))
+            out.append((key, Trade(ts, p, q, p * q, side, inferred=inferred, tid=str(t.get("a") or ""))))
         return out
 
     async def stream(self) -> None:

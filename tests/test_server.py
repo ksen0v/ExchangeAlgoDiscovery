@@ -115,3 +115,37 @@ def test_wall_override_per_venue_and_coin(client):
     # back to the common settings
     r = client.put("/api/wall-overrides", json={"key": "WEEX:perp"})
     assert "WEEX:perp" not in r.json()["overrides"]
+
+
+def test_module_endpoints(client):
+    import time as _t
+
+    deadline = _t.time() + 15
+    snap = {}
+    while _t.time() < deadline:
+        snap = client.get("/api/analytics").json()
+        if snap.get("delta") and snap.get("regime"):
+            break
+        _t.sleep(0.5)
+    assert snap["coin"] == "DEMOX" and snap["delta"]["windows"] and len(snap["regime"]["windows"]) == 3
+    h = client.get("/api/health").json()
+    assert h["streams"] and {"latency_ms", "reconnects", "gaps"} <= set(h["streams"][0]) and "clock" in h
+    r = client.put("/api/modules", json={"modules.delta": False})
+    assert r.status_code == 200 and r.json()["data"]["modules"]["delta"] is False
+    assert client.put("/api/modules", json={"alert_z": "abc"}).status_code == 400
+    assert client.put("/api/modules", json={"nope": 1}).status_code == 400
+    rep = client.get("/api/journal/report?days=1").json()
+    assert rep["total"] >= 0 and isinstance(rep["types"], list)
+    assert isinstance(client.get("/api/journal?days=1").json(), list)
+
+
+def test_ws_analytics_only_on_request(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "filter", "analytics": True})
+        for _ in range(400):
+            msg = ws.receive_json()
+            if msg["type"] == "analytics":
+                assert msg["coin"] == "DEMOX" and "oi" in msg
+                break
+        else:
+            raise AssertionError("no analytics snapshot")

@@ -6,4 +6,5 @@ aiohttp>=3.10
 aiosqlite>=0.20
 pydantic-settings>=2.4
 orjson>=3.10
+pyyaml>=6.0
 tzdata>=2024.1

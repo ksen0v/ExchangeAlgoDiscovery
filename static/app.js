@@ -413,6 +413,7 @@ function setCoin(coin) {
   $("coinInput").placeholder = coin;
   document.title = `${coin} · Manipulation Radar`;
   S.tape = [];
+  if (window.A) { window.A.snap = null; $("regimeStrip").innerHTML = ""; }
   S.selected.clear();
   store.set("selected", []);
   renderChips();
@@ -465,6 +466,7 @@ function openSettings() {
     ? "Telegram настроен."
     : "Telegram не настроен: укажите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env и перезапустите.";
   $("settingsDlg").showModal();
+  if (window.renderModulesSettings) window.renderModulesSettings();
 }
 $("settingsBtn").addEventListener("click", openSettings);
 $("settingsForm").addEventListener("submit", async (e) => {
@@ -476,6 +478,7 @@ $("settingsForm").addEventListener("submit", async (e) => {
   body.wall_ignore_mm = $("settingsForm").elements.wall_ignore_mm.checked;
   try {
     S.config = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
+    if (window.saveModulesSettings) await window.saveModulesSettings();
     toast("Настройки сохранены");
     renderStreams();
   } catch (err) {
@@ -488,7 +491,8 @@ $("tgTest").addEventListener("click", async () => {
 
 // ---------- websocket ----------
 function sendFilter() {
-  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd }));
+  const analytics = !!(window.A && window.A.view === "analysis");
+  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd, analytics }));
 }
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -510,6 +514,10 @@ function connect() {
       if (msg.alert.coin === S.coin) addAlert(msg.alert);
     } else if (msg.type === "coin") {
       setCoin(msg.coin);
+    } else if (msg.type === "analytics") {
+      onAnalytics(msg);
+    } else if (msg.type === "regime") {
+      onRegime(msg);
     }
   };
 }

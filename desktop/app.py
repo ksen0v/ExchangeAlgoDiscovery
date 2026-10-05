@@ -190,6 +190,7 @@ class OverlaySlot(QObject):
         self.feed.request_failed.connect(ctl.notify_error)
         if self.is_main:
             self.feed.walls.connect(self.overlay.add_walls)
+            self.feed.regime.connect(self.overlay.set_regime)
         self.overlay.settings_requested.connect(lambda: ctl.open_overlay_settings(self))
         self.overlay.lock_requested.connect(lambda: ctl.act_lock.setChecked(True))
         self.overlay.hide_requested.connect(lambda: self.action.setChecked(False))
@@ -511,9 +512,9 @@ class Controller(QObject):
             return
         main.show_alert(alert)
         if self.prefs.notify_alerts and self.tray:
-            kind = "фьючерс" if alert.get("kind") == "perp" else "спот"
+            kind = {"perp": " фьючерс", "spot": " спот"}.get(alert.get("kind") or "", "")
             self.tray.showMessage(
-                f"{alert.get('coin')} · {alert.get('venue')} {kind} · скор {alert.get('score', 0):.0f}",
+                f"{alert.get('coin')} · {alert.get('venue')}{kind} · скор {alert.get('score', 0):.0f}",
                 "\n".join(alert.get("reasons") or []),
                 QSystemTrayIcon.MessageIcon.Warning,
                 8000,
@@ -723,6 +724,7 @@ class Controller(QObject):
             "overlay_rows": len(main.overlay.tape.rows),
             "dashboard_loaded": self.main.web_ok,
             "coin": main.overlay.coin,
+            "regime": main.overlay.header.regime.text(),  # М3 badge (informational)
             "extra": {s.coin: {"trades": s.got_trades, "rows": len(s.overlay.tape.rows)} for s in self.extra_slots},
         }
         ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"]

@@ -51,8 +51,10 @@ class Tape:
 
 
 class Manager:
-    def __init__(self, detector: Detector, hub: Hub, session: aiohttp.ClientSession):
+    def __init__(self, detector: Detector, hub: Hub, session: aiohttp.ClientSession, analytics=None, recorder=None):
         self.detector = detector
+        self.analytics = analytics  # app.analytics.engine.Analytics: М1-М4 of the main coin
+        self.recorder = recorder  # app.analytics.recorder.Recorder: raw data on disk
         self.hub = hub
         self.session = session
         self.pool = CcxtPool()
@@ -72,6 +74,8 @@ class Manager:
 
     def on_trades(self, stream: Stream, trades: list[Trade], live: bool) -> None:
         kept = self.detector.ingest(stream.key, trades)
+        if self.analytics:
+            self.analytics.on_trades(stream, kept)
         self._tune(self.repeats)
         rows = []
         for t in kept:
@@ -100,6 +104,8 @@ class Manager:
 
     def on_book(self, stream: Stream, ts: float, bids: list, asks: list) -> None:
         events = self.detector.ingest_book(stream.key, ts, bids, asks)
+        if self.analytics:
+            self.analytics.on_book(stream, ts, bids, asks)
         if events:
             self.hub.push_walls(events)
 
@@ -113,12 +119,17 @@ class Manager:
                 if source is None:
                     continue
                 s = make_stream(venue.name, kind, source, coin, on_trades, self.pool, self.session)
+                if self.recorder:
+                    s.on_raw = self.recorder.trades
                 if books:
                     s.on_book = self.on_book
-                    s.books_on = lambda: self.detector.cfg.walls
+                    s.books_on = self._books_on
                 streams[s.key] = s
                 tasks.append(asyncio.create_task(s.run(), name=f"{coin}:{s.key}"))
         return streams, tasks
+
+    def _books_on(self) -> bool:
+        return self.detector.cfg.walls or bool(self.analytics and self.analytics.wants_books())
 
     @staticmethod
     async def _halt(streams: dict[str, Stream], tasks: list[asyncio.Task]) -> None:
@@ -136,6 +147,8 @@ class Manager:
             await self._halt(self.streams, self._tasks)
             self.coin = self.hub.primary = coin
             self.detector.reset(coin)
+            if self.analytics:
+                self.analytics.reset(coin)
             self.repeats.reset()
             self._marked = set()
             self.streams, self._tasks = self._launch(coin, self.on_trades, books=True)
@@ -169,6 +182,8 @@ class Manager:
             for tape in self.watch.values():
                 await self._halt(tape.streams, tape.tasks)
             self.watch = {}
+            if self.analytics:
+                self.analytics.shutdown()
             await self._halt(self.streams, self._tasks)
             self.streams, self._tasks = {}, []
             await self.pool.reset()
@@ -183,6 +198,10 @@ class Manager:
 
     def infos(self) -> list[dict]:
         return [s.info() for s in self.streams.values()]
+
+    def health(self, now: float) -> list[dict]:
+        """Connection health of the main coin's streams (ТЗ 3.5)."""
+        return [s.health(now) for s in self.streams.values()]
 
     def watch_snapshots(self, now: float) -> dict[str, dict]:
         """Per watched coin: stream statuses and last prices (what its overlay needs)."""
