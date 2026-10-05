@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
         web_dir = data_dir() / "web"
         profile.setPersistentStoragePath(str(web_dir / "storage"))
         profile.setCachePath(str(web_dir / "cache"))
+        profile.clearHttpCache()  # never show a dashboard cached by an older version
         profile.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
         self.web = QWebEngineView()
         self.web.setPage(QWebEnginePage(profile, self.web))
