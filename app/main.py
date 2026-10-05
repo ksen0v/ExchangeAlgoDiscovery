@@ -141,6 +141,16 @@ def authorized(conn: HTTPConnection) -> bool:
 
 
 @app.middleware("http")
+async def no_stale_dashboard(request: Request, call_next):
+    """The dashboard must never run from a browser cache after an update (revalidated via ETag)."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     if not authorized(request):
         return PlainTextResponse(

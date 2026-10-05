@@ -4,6 +4,7 @@ import logging
 import time
 from collections import defaultdict, deque
 
+import ccxt.async_support as ccxtasync
 import ccxt.pro as ccxtpro
 
 from app.collectors.base import BOOK_DEPTH, NotListed, Stream, TradesCallback, poll_loop
@@ -31,7 +32,8 @@ class CcxtPool:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def create(self, ex_id: str) -> ccxtpro.Exchange:
-        ex = getattr(ccxtpro, ex_id)(
+        # ccxt.pro for WebSocket venues; REST-only venues (BTSE, BtcTurk, ...) are polled
+        ex = (getattr(ccxtpro, ex_id, None) or getattr(ccxtasync, ex_id))(
             {
                 "enableRateLimit": True,
                 "timeout": 30000,

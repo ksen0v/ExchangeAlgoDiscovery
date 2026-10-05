@@ -54,8 +54,8 @@ def _x(i: str) -> Source:
     return Source("custom", i)
 
 
-# Top-30 venues by spot + derivatives volume (CoinGecko / CoinMarketCap, 2026) + Binance Alpha.
-# Five of them are not in ccxt and are implemented by hand in app/collectors/.
+# Top venues by spot + derivatives volume (CoinGecko / CoinMarketCap, 2026), Binance Alpha,
+# perpetual DEXes and AMM DEXes. Those not in ccxt are implemented in app/collectors/.
 VENUES: list[Venue] = [
     Venue("Binance", _c("binance"), _c("binanceusdm")),
     Venue("Binance Alpha", _x("binance_alpha"), None),  # early-stage tokens in the Binance app
@@ -88,6 +88,65 @@ VENUES: list[Venue] = [
     Venue("CoinEx", _c("coinex"), _c("coinex")),
     Venue("Bitrue", _c("bitrue"), _c("bitrue")),
     Venue("Aster", _c("aster"), _c("aster")),
+    # --- more of the top-100 (CoinGecko / CoinMarketCap, 2026): global and regional CEX ---
+    Venue("Binance US", _c("binanceus"), None),
+    Venue("Coinbase Intl", None, _c("coinbaseinternational")),
+    Venue("Bitstamp", _c("bitstamp"), None),
+    Venue("Gemini", _c("gemini"), _c("gemini")),
+    Venue("Bitvavo", _c("bitvavo"), None),
+    Venue("Poloniex", _c("poloniex"), _c("poloniex")),
+    Venue("HashKey", _c("hashkey"), _c("hashkey")),
+    Venue("WOO X", _c("woo"), _c("woo")),
+    Venue("BitMEX", _c("bitmex"), _c("bitmex")),
+    Venue("Deribit", None, _c("deribit")),
+    Venue("Backpack", _c("backpack"), _c("backpack")),
+    Venue("Bullish", _c("bullish"), _c("bullish")),
+    Venue("Deepcoin", _c("deepcoin"), _c("deepcoin")),
+    Venue("HitBTC", _c("hitbtc"), _c("hitbtc")),
+    Venue("BTSE", _c("btse"), _c("btse")),
+    Venue("BYDFi", None, _c("bydfi")),
+    Venue("DigiFinex", _c("digifinex"), _c("digifinex")),
+    Venue("BigONE", _c("bigone"), _c("bigone")),
+    Venue("Delta", None, _c("delta")),
+    Venue("CEX.IO", _c("cex"), None),
+    Venue("P2B", _c("p2b"), None),
+    Venue("LATOKEN", _c("latoken"), None),
+    Venue("Blockchain.com", _c("blockchaincom"), None),
+    Venue("Pionex", _x("pionex"), _x("pionex")),
+    Venue("Zoomex", None, _x("zoomex")),
+    Venue("Coinone", _c("coinone"), None),
+    Venue("Coincheck", _c("coincheck"), None),
+    Venue("bitFlyer", _c("bitflyer"), None),
+    Venue("Bitbank", _c("bitbank"), None),
+    Venue("BitoPro", _c("bitopro"), None),
+    Venue("BtcTurk", _c("btcturk"), None),
+    Venue("Indodax", _c("indodax"), None),
+    Venue("Tokocrypto", _c("tokocrypto"), None),
+    Venue("CoinDCX", _x("coindcx"), None),
+    Venue("Bitso", _c("bitso"), None),
+    Venue("Mercado Bitcoin", _c("mercado"), None),
+    Venue("BTC Markets", _c("btcmarkets"), None),
+    Venue("Independent Reserve", _c("independentreserve"), None),
+    Venue("Luno", _c("luno"), None),
+    # --- perpetual DEX (order books on-chain / app-chains) ---
+    Venue("dYdX", None, _c("dydx")),
+    Venue("Paradex", None, _c("paradex")),
+    Venue("Lighter", None, _c("lighter")),
+    Venue("ApeX", None, _c("apex")),
+    Venue("Extended", None, _c("extended")),
+    Venue("GRVT", None, _c("grvt")),
+    Venue("Pacifica", None, _c("pacifica")),
+    Venue("WOOFi Pro", None, _c("woofipro")),
+    Venue("Derive", None, _c("derive")),
+    Venue("Hibachi", None, _c("hibachi")),
+    # --- spot DEX (AMM pools, any chain, via GeckoTerminal) ---
+    Venue("Uniswap", _x("dex_uniswap"), None),
+    Venue("PancakeSwap", _x("dex_pancakeswap"), None),
+    Venue("Raydium", _x("dex_raydium"), None),
+    Venue("Aerodrome", _x("dex_aerodrome"), None),
+    Venue("Orca", _x("dex_orca"), None),
+    Venue("Meteora", _x("dex_meteora"), None),
+    Venue("PumpSwap", _x("dex_pumpswap"), None),
 ]
 
 # Narrow what ccxt loads on startup: we never need options / dated futures.
@@ -111,6 +170,24 @@ QUOTE_OVERRIDE: dict[str, list[str]] = {
     "kraken": ["USD", "USDT", "USDC"],
     "cryptocom": ["USD", "USDT"],
     "bitfinex": ["USD", "UST"],
+    "binanceus": ["USD", "USDT"],
+    "bitstamp": ["USD", "USDT", "EUR"],
+    "gemini": ["USD", "USDT"],
+    "cex": ["USD", "USDT", "EUR"],
+    "bitvavo": ["EUR"],
+    "coinone": ["KRW"],
+    "coincheck": ["JPY"],
+    "bitflyer": ["JPY"],
+    "bitbank": ["JPY"],
+    "bitopro": ["TWD", "USDT"],
+    "btcturk": ["TRY", "USDT"],
+    "indodax": ["IDR"],
+    "tokocrypto": ["USDT", "IDR"],
+    "bitso": ["USD", "MXN"],
+    "mercado": ["BRL"],
+    "btcmarkets": ["AUD"],
+    "independentreserve": ["AUD", "USD", "USDT"],
+    "luno": ["ZAR", "EUR", "GBP"],
 }
 
 # ccxt normally reports derivative trade amounts in contracts; these exchanges'

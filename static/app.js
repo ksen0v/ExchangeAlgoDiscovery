@@ -203,12 +203,17 @@ function renderStreams() {
   $("windowHint").textContent = `окно ${cfg.window_sec}с · база ${Math.round(cfg.baseline_sec / 60)} мин`;
 }
 
-$("streamsBody").addEventListener("click", (e) => {
-  const cell = e.target.closest("td.wallcell");
+// The table is re-rendered every second: a "click" whose press and release land on two
+// different renders is never fired, so the wall settings open on the press itself.
+$("streamsBody").addEventListener("mousedown", (e) => {
+  const cell = e.button === 0 && e.target.closest("td.wallcell");
   if (cell) {
+    e.preventDefault();
     openWallDlg(cell.closest("tr[data-key]").dataset.key);
-    return;
   }
+});
+$("streamsBody").addEventListener("click", (e) => {
+  if (e.target.closest("td.wallcell")) return;
   const tr = e.target.closest("tr[data-key]");
   if (!tr) return;
   toggleSelected(tr.dataset.key);

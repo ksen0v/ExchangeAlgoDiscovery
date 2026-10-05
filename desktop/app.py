@@ -40,6 +40,7 @@ from desktop.overlay import OverlayWindow
 from desktop.prefs import APP_NAME, MAX_EXTRA, ExtraOverlay, OverlayPrefs, Prefs, data_dir
 
 log = logging.getLogger("desktop")
+LOAD_RETRIES = 10
 
 
 def make_icon() -> QIcon:
@@ -130,12 +131,15 @@ class MainWindow(QMainWindow):
         profile = QWebEngineProfile(APP_NAME, QApplication.instance())
         web_dir = data_dir() / "web"
         profile.setPersistentStoragePath(str(web_dir / "storage"))
-        profile.setCachePath(str(web_dir / "cache"))
+        # In-memory HTTP cache: a dashboard cached on disk by an older version is never shown.
+        # (clearHttpCache() is asynchronous in Qt 6.8 and aborted the first page load on Windows.)
+        profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
         profile.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
         self.web = QWebEngineView()
         self.web.setPage(QWebEnginePage(profile, self.web))
         self.web.loadFinished.connect(self._loaded)
         self.web_ok = False
+        self._url, self._retries = "", 0
         self.stack.addWidget(self.web)
         self.setCentralWidget(self.stack)
 
@@ -144,13 +148,19 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.message)
 
     def load(self, url: str) -> None:
+        self._url, self._retries = url, 0
         self.web.load(QUrl(url))
         self.stack.setCurrentWidget(self.web)
 
     def _loaded(self, ok: bool) -> None:
         self.web_ok = ok
-        if not ok:
-            self.statusBar().showMessage("Дашборд не загрузился: проверьте адрес сервера (Подключение…)", 15000)
+        if ok:
+            return
+        if self._retries < LOAD_RETRIES:  # the server may still be busy starting ~125 streams
+            self._retries += 1
+            QTimer.singleShot(1500, lambda: self.web.load(QUrl(self._url)))
+            return
+        self.statusBar().showMessage("Дашборд не загрузился: проверьте адрес сервера (Подключение…)", 15000)
 
     def closeEvent(self, e) -> None:
         self.ctl.quit()
