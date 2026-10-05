@@ -56,7 +56,7 @@ class Stream:
         self.coin = coin.upper()
         self.key = f"{venue}:{kind}"
         self.on_trades = on_trades
-        self.status = "init"  # init | connecting | live | polling | na | error
+        self.status = "init"  # init | connecting | live | polling | na | error | noapi
         self.error = ""
         self.symbol = ""
         self.transport = ""  # ws | rest

@@ -125,3 +125,11 @@ def test_history_follows_window_and_baseline():
     det.reset("X")
     det.ingest("A:spot", [Trade(NOW - 1500, 1.0, 1, 1.0, "buy")], now=NOW)
     assert det.states["A:spot"].buckets  # not dropped as too old
+
+
+def test_inactive_market_is_a_fallback_not_skipped():
+    # XT.com marks pairs without API trading inactive although they trade and have public trades
+    only_inactive = {"a": {"symbol": "AIN/USDT", "base": "AIN", "quote": "USDT", "spot": True, "active": False}}
+    assert pick_ccxt_market(only_inactive, "AIN", "spot")[0]["symbol"] == "AIN/USDT"
+    both = {**only_inactive, "b": {"symbol": "AIN/USDC", "base": "AIN", "quote": "USDC", "spot": True, "active": True}}
+    assert pick_ccxt_market(both, "AIN", "spot")[0]["symbol"] == "AIN/USDC"

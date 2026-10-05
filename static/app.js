@@ -189,13 +189,13 @@ function renderStreams() {
   $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="12" class="empty">Подключаемся к биржам…</td></tr>`;
 
   const inactive = S.streams.filter((s) => !isActive(s));
-  const label = { na: "нет пары", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
+  const label = { na: "нет пары", noapi: "нет публичного API", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
   $("inactiveSummary").textContent = `Не торгуется / подключение / ошибки (${inactive.length})`;
   $("inactiveList").innerHTML = inactive
     .sort((a, b) => a.status.localeCompare(b.status) || a.key.localeCompare(b.key))
     .map((s) => {
       const [venue] = splitKey(s.key);
-      const err = s.error ? ` <span class="err" title="${esc(s.error)}">⚠</span>` : "";
+      const err = s.error ? ` <span class="${s.status === "noapi" ? "muted" : "err"}" title="${esc(s.error)}">${s.status === "noapi" ? "ⓘ" : "⚠"}</span>` : "";
       return `<div>${esc(venue)}${kindBadge(s.kind)} <span class="${s.status === "error" ? "err" : ""}">${label[s.status] || s.status}</span>${err}</div>`;
     }).join("");
 

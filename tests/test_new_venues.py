@@ -123,3 +123,9 @@ def test_fiat_rates_and_fiat_markets(monkeypatch):
     markets = {"a": {"symbol": "BTC/JPY", "base": "BTC", "quote": "JPY", "spot": True}}
     assert pick_ccxt_market(markets, "BTC", "spot", ["JPY"])[0]["symbol"] == "BTC/JPY"
     assert pick_ccxt_market(markets, "BTC", "spot") is None  # fiat only where configured
+
+
+def test_markets_without_public_api_are_shown_as_such():
+    s = rest_venues.NoPublicApi("BYDFi", "spot", "AIN", lambda *a: None)
+    asyncio.run(s.run())
+    assert s.info()["status"] == "noapi" and "спот" in s.info()["error"]

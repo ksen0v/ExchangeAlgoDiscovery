@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from app.config import VENUES
 from desktop.prefs import OverlayPrefs, Prefs
 
-STATUS = {"na": "нет пары", "error": "ошибка", "connecting": "подключение", "init": "ожидание"}
+STATUS = {"na": "нет пары", "noapi": "нет API", "error": "ошибка", "connecting": "подключение", "init": "ожидание"}
 
 
 class OverlaySettingsDialog(QDialog):
