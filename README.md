@@ -1,7 +1,7 @@
 # Manipulation Radar
 
 Веб-сервис для скальпера: даёшь монету — он в реальном времени слушает сделки
-на 30 крупнейших биржах (спот + бессрочные фьючерсы, ~55 потоков) и показывает,
+на 87 площадках — CEX, региональные биржи и DEX (спот + бессрочные фьючерсы, ~125 потоков) и показывает,
 **на какой бирже сейчас работает крупный участник**. Дальше открываешь стакан этой
 биржи у себя в терминале.
 
@@ -31,8 +31,8 @@
 
 ## Подставки: крупные заявки у цены
 
-Кроме сделок читаются **стаканы** всех бирж (26 бирж через ccxt по WebSocket, BitMart / Bitunix /
-Ourbit / CoinW — по REST раз в 2 с), до 50 уровней на сторону, 2 раза в секунду.
+Кроме сделок читаются **стаканы** бирж (через ccxt по WebSocket, остальные — по REST раз в 2 с;
+у AMM-DEX и Binance Alpha стакана нет), до 50 уровней на сторону, 2 раза в секунду.
 
 **Плита** — уровень не дальше 0.5% от цены (настройка «близость»), который в 8+ раз больше
 обычного уровня этого же стакана и не меньше $20k (оба порога настраиваются). Каждую плиту
@@ -134,21 +134,31 @@ dist\ManipulationRadar\ManipulationRadar.exe
 
 ## Биржи
 
-Binance, Binance Alpha, Bybit, OKX, Coinbase, Bitget, Gate, KuCoin, MEXC, HTX, Upbit, Kraken, BingX,
-Crypto.com, Hyperliquid, WhiteBIT, LBank, Toobit, WEEX, CoinW, Ourbit, Bitunix, BitMart,
-XT.com, Phemex, Bithumb, Bitfinex, BloFin, CoinEx, Bitrue, Aster — см. `app/config.py`.
+87 площадок (≈125 потоков на монету: спот и бессрочные фьючерсы) — см. `app/config.py`.
 
-- 26 бирж — через [ccxt.pro](https://github.com/ccxt/ccxt) (WebSocket).
-- **Binance Alpha** (ранние токены в приложении Binance) — отдельный коллектор: тикер ищется в списке
-  Alpha-токенов (если тикер есть на нескольких сетях — берётся самый торгуемый), сделки опрашиваются
-  раз в секунду. Стакана у Alpha нет — только лента и детектор по сделкам.
-- 4 биржи, которых нет в ccxt, написаны вручную (`app/collectors/`):
-  **BitMart** (WS спот+перп), **Bitunix** (WS перп; у спота нет публичного API),
-  **Ourbit** (WS перп, REST спот), **CoinW** (REST раз в секунду — их WS закрыт CDN).
-- Контракты вида `1000PEPE`, `kPEPE` приводятся к цене 1 монеты; KRW (Upbit, Bithumb)
-  переводится в USD по курсу USDT/KRW с Upbit.
-- Для Upbit/Bithumb берётся KRW-пара, для Coinbase/Kraken/Crypto.com/Bitfinex — USD-пара,
-  для остальных USDT (затем USDC/USD).
+- **Крупные CEX:** Binance, Binance Alpha, Binance US, Bybit, OKX, Coinbase, Coinbase Intl, Bitget, Gate,
+  KuCoin, MEXC, HTX, Kraken, BingX, Crypto.com, WhiteBIT, LBank, Toobit, WEEX, CoinW, Ourbit, Bitunix,
+  BitMart, XT.com, Phemex, Bitfinex, BloFin, CoinEx, Bitrue, Bitstamp, Gemini, Bitvavo, Poloniex, HashKey,
+  WOO X, BitMEX, Deribit, Backpack, Bullish, Deepcoin, HitBTC, BTSE, BYDFi, DigiFinex, BigONE, Delta,
+  CEX.IO, P2B, LATOKEN, Blockchain.com, Pionex, Zoomex.
+- **Региональные (к местной валюте):** Upbit, Bithumb, Coinone (KRW), Coincheck, bitFlyer, Bitbank (JPY),
+  BitoPro (TWD), BtcTurk (TRY), Indodax, Tokocrypto (IDR), CoinDCX (INR), Bitso (MXN/USD),
+  Mercado Bitcoin (BRL), BTC Markets, Independent Reserve (AUD), Luno (ZAR). Цены переводятся в USD
+  по курсам валют (обновляются раз в час), KRW — по USDT/KRW на Upbit (с «кимчи-премией»).
+- **DEX-фьючерсы:** Hyperliquid, Aster, dYdX, Paradex, Lighter, ApeX, Extended, GRVT, Pacifica,
+  WOOFi Pro, Derive, Hibachi.
+- **DEX спот (AMM):** Uniswap, PancakeSwap, Raydium, Aerodrome, Orca, Meteora, PumpSwap — через
+  публичный API GeckoTerminal: берётся самый торгуемый пул монеты на этой DEX (любая сеть), свопы
+  опрашиваются по очереди (у GeckoTerminal лимит ~30 запросов/мин на всех), поэтому лента DEX
+  отстаёт на 10–30 с. Стакана у AMM нет — только сделки.
+
+Как подключено:
+- через [ccxt](https://github.com/ccxt/ccxt): WebSocket (ccxt.pro) где есть, иначе REST-опрос
+  (BTSE, BtcTurk, bitFlyer, DigiFinex, …);
+- вручную (`app/collectors/`): **BitMart**, **Bitunix**, **Ourbit**, **CoinW**, **Binance Alpha**,
+  **Pionex**, **Zoomex**, **CoinDCX** (рынок INR; USDT-пары там — зеркало Binance), DEX через GeckoTerminal.
+- Контракты вида `1000PEPE`, `kPEPE` приводятся к цене 1 монеты.
+- Монеты нет на бирже — поток уходит в «Не торгуется»; ошибки подключения видны там же.
 
 ## Запуск (Docker / VPS)
 
