@@ -307,9 +307,11 @@ $("hideQuiet").addEventListener("change", () => { S.hideQuiet = $("hideQuiet").c
 
 // ---------- alerts ----------
 function alertHtml(a, fresh) {
-  return `<li class="${fresh ? "fresh" : ""}" data-key="${esc(a.key)}">
+  // module signals (М1–М4) open the analysis screen; tape alerts filter the tape by their venue
+  const target = a.module ? `data-module="${esc(a.module)}"` : `data-key="${esc(a.key)}"`;
+  return `<li class="${fresh ? "fresh" : ""}" ${target}>
     <div class="alert-top"><span class="t">${fmtTime(a.ts)}</span>
-    <span class="v">${esc(a.venue)}</span>${kindBadge(a.kind)}
+    <span class="v">${esc(a.venue)}</span>${a.kind ? kindBadge(a.kind) : ""}
     <span class="muted">${esc(a.coin)}</span>
     <span class="s">${Math.round(a.score)}</span></div>
     <ul class="alert-reasons">${a.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></li>`;
@@ -327,6 +329,7 @@ function addAlert(a) {
   beep();
 }
 $("alertsList").addEventListener("click", (e) => {
+  if (e.target.closest("li[data-module]") && window.setView) { setView("analysis"); return; }
   const li = e.target.closest("li[data-key]");
   if (li) toggleSelected(li.dataset.key, true);
 });

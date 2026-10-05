@@ -55,7 +55,8 @@ S = State()
 def _journal_entry(a: dict, collect_only: bool) -> dict:
     """An alert (detector or module) as a journal row (М15)."""
     if a.get("module"):
-        return {**a, "collect_only": collect_only}
+        return {**a, "collect_only": collect_only,
+                "data": {**(a.get("data") or {}), "reasons": a.get("reasons"), "venue": a.get("venue")}}
     bs = a.get("buy_share")
     return {
         "ts": a["ts"], "coin": a["coin"], "module": "Лента", "type": "tape_anomaly",

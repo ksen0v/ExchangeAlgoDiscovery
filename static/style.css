@@ -375,3 +375,10 @@ th.sorted::after { content: " ▾"; }
 .st-error { color: var(--sell); }
 .st-connecting, .st-init { color: var(--warn); }
 #modulesGrid label.check { font-size: 12px; }
+@media (max-width: 760px) {
+  .regime-cards { grid-template-columns: 1fr; }
+  .regime-strip { flex-wrap: wrap; }
+  .regime-strip .rbadge { max-width: 100%; }
+  .analysis { padding: 8px; gap: 8px; }
+  .journal, .health { padding: 8px; }
+}

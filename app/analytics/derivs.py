@@ -23,6 +23,7 @@ OI_FROM_VALUE = {"xt", "btse", "bingx", "backpack", "hitbtc"}
 # liquidation ORDER (sell = a long was closed)
 LIQ_SIDE_IS_POSITION = {"bybit"}
 BINANCE_FUTURES = {"binanceusdm"}
+_HISTORY_DONE: dict[tuple[str, str], float] = {}  # (coin, venue) -> when OI history was downloaded
 
 
 def _num(x) -> float | None:
@@ -172,11 +173,40 @@ class CcxtDerivFeed:
     def _enabled(self, module: str) -> bool:
         return self.cfg.on(module)
 
+    async def _oi_history(self, ex) -> None:
+        """Up to 30 days of 5-minute OI (free on Binance, Bybit, OKX, KuCoin, HTX, Gate): the ΔОИ
+        baseline of this venue is ready at once. The % change needs no unit conversion."""
+        venue = self.key.split(":", 1)[0]
+        if not self._has(ex, "fetchOpenInterestHistory") or _HISTORY_DONE.get((self.stream.coin, venue), 0) > \
+                time.time() - 6 * 3600:
+            return
+        _HISTORY_DONE[(self.stream.coin, venue)] = time.time()
+        since = int((time.time() - 29.5 * 86400) * 1000)
+        try:
+            rows = await asyncio.wait_for(ex.fetch_open_interest_history(
+                self.stream.symbol, "5m", since, None, {"paginate": True, "paginationCalls": 18}), 120)
+        except Exception as e:  # noqa: BLE001 - no pagination here: the latest page only
+            log.info("%s OI history (paginated): %s", self.key, e)
+            rows = await asyncio.wait_for(ex.fetch_open_interest_history(self.stream.symbol, "5m", None, 500), 30)
+        pts = sorted((r["timestamp"] / 1000, _num(r.get("openInterestAmount")) or _num(r.get("openInterestValue")))
+                     for r in rows or [] if r.get("timestamp"))
+        out = [(t1, (b / a - 1) * 100) for (t0, a), (t1, b) in zip(pts, pts[1:])
+               if a and b and 240 <= t1 - t0 <= 360]
+        if out:
+            self.sink.seed_history(f"doi5:{venue}", out)
+            log.info("%s: %d points of OI history for the baseline", self.key, len(out))
+
     async def _poll_oi(self) -> bool:
         ex = await self._ex()
         if not self._has(ex, "fetchOpenInterest"):
             self.status["oi"] = "нет данных у биржи"
             return True
+        try:
+            await self._oi_history(ex)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - history is a bonus
+            log.info("%s OI history failed: %s", self.key, e)
         poll = self.cfg.get("open_interest.binance_poll_sec" if self.ex_id in BINANCE_FUTURES
                             else "open_interest.poll_sec")
         while True:
@@ -324,7 +354,7 @@ class DemoDerivFeed:
                     coins = random.uniform(2e5, 2e6) / price
                 flow = self.sink.flow(self.key, 10)  # recent perp delta drives the OI change
                 # recent perp flow opens (mostly) or closes positions: a fraction of it reaches the OI
-                coins *= 1 + random.gauss(0, 0.0002) + 0.02 * (abs(flow) / max(price * coins, 1)) * random.choice((1, 1, -1))
+                coins *= 1 + random.gauss(0, 0.0002) + 0.02 * (abs(flow) / max(price * coins, 1)) * random.choice((1, -1))
                 self.sink.oi(self.key, now, coins, coins * price)
             if now - last_funding > 10:
                 last_funding = now

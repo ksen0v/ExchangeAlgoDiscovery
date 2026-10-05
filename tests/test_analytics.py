@@ -262,13 +262,18 @@ def test_recorder_writes_unified_trades(cfg, tmp_path):
 # ---- pollers over a ccxt-like instance ---------------------------------------------------
 class FakeEx:
     has = {"fetchOpenInterest": True, "fetchFundingRate": True, "fetchFundingInterval": True,
-           "watchLiquidations": True}
+           "watchLiquidations": True, "fetchOpenInterestHistory": True}
 
     def __init__(self):
         self.liq_sent = False
 
     async def fetch_open_interest(self, symbol):
         return {"openInterestAmount": 20, "openInterestValue": None}  # contracts on OKX
+
+    async def fetch_open_interest_history(self, symbol, timeframe, since=None, limit=None, params=None):
+        t = 1_700_000_000_000
+        return [{"timestamp": t, "openInterestAmount": 100}, {"timestamp": t + 300_000, "openInterestAmount": 110},
+                {"timestamp": t + 600_000, "openInterestAmount": 99}, {"timestamp": t + 3_600_000, "openInterestAmount": 1}]
 
     async def fetch_funding_rate(self, symbol):
         return {"fundingRate": 0.0002, "markPrice": 0.0105, "indexPrice": 0.01, "interval": None}
@@ -309,3 +314,6 @@ def test_ccxt_deriv_feed_polls_everything(cfg):
     assert fd["mark"] == pytest.approx(0.0000105) and fd["index"] == pytest.approx(0.00001)
     ev = a.liq_feed[0]
     assert ev["side"] == "long" and ev["usd"] == pytest.approx(3 * 10 * 0.0104)
+    # 5-minute OI history -> ΔOI % samples of this venue's baseline (the 55-minute gap is skipped)
+    hist = [(m, v) for _, m, _, v in a.baselines.pending if m == "doi5:OKX"]
+    assert [round(v, 6) for _, v in hist] == [10.0, -10.0]

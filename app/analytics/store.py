@@ -38,6 +38,7 @@ DAY = 86400
 SESSION_KEEP = 3600  # seconds of 5-second session samples
 REFRESH_SEC = 3600
 REFRESH_YOUNG_SEC = 300
+SEEDED_PREFIXES = ("doi5:",)  # metrics that can start with history downloaded from the venue
 
 
 class AnalyticsStore:
@@ -174,6 +175,10 @@ class Baselines:
         c = self.cache.get(metric)
         return c.get("30") if c else None
 
+    def request_refresh(self) -> None:
+        """Recompute the statistics at the next background step (after new history arrived)."""
+        self._refreshed_at = 0.0
+
     def history_days(self, now: float) -> float:
         return (now - self.oldest) / DAY if self.oldest else 0.0
 
@@ -221,7 +226,8 @@ class Baselines:
             if not rows:
                 continue
             first = rows[0][0]
-            oldest = first if oldest is None else min(oldest, first)
+            if not metric.startswith(SEEDED_PREFIXES):  # downloaded history is not our own record
+                oldest = first if oldest is None else min(oldest, first)
             entry = {"span_days": (now - first) / DAY}
             short = min(self.days)
             for d in self.days:

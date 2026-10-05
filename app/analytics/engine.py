@@ -215,6 +215,12 @@ class Analytics:
         if self.recorder:
             self.recorder.event(self.coin, "liq", key, ev)
 
+    def seed_history(self, metric: str, points: list[tuple[float, float]]) -> None:
+        """Free history from the venue (e.g. 30 days of 5-minute OI): baselines without waiting a month."""
+        for ts, v in points:
+            self.baselines.record(metric, v, ts)
+        self.baselines.request_refresh()
+
     def last_price(self, key: str) -> float | None:
         v = self.last.get(key)
         return v[1] if v else None
@@ -765,12 +771,15 @@ class Analytics:
                 ]}))
         dz = float(self.cfg.get("regime.oi_deadzone_pct"))
         need = int(self.cfg.get("open_interest.broad_min_venues"))
-        rising = [(k.split(":", 1)[0], v["pct"][300]) for k, v in venues.items() if (v["pct"].get(300) or 0) > dz]
+        rising = sorted(((k.split(":", 1)[0], v["pct"][300]) for k, v in venues.items()
+                         if (v["pct"].get(300) or 0) > dz), key=lambda x: -x[1])
         d_perp = flow5.get("delta_perp") or 0
+        listed = ", ".join(f"{v} {p:+.2f}%" for v, p in rising[:8]) + (
+            f" и ещё {len(rising) - 8}" if len(rising) > 8 else "")
         out.append(("oi_broad", "all", (len(rising) / need) if need and len(venues) >= need else None, {
             "direction": 1 if d_perp > 0 else -1 if d_perp < 0 else 0,
-            "reasons": [f"ОИ растёт одновременно на {len(rising)} биржах (нужно {need}): " + ", ".join(
-                f"{v} {p:+.2f}%" for v, p in rising), "Это общий интерес, а не один участник"]}))
+            "reasons": [f"ОИ за 5м растёт одновременно на {len(rising)} из {len(venues)} бирж (нужно {need}): {listed}",
+                        "Это общий интерес, а не один участник"]}))
         return out
 
     def _sig_funding(self, delta: dict, oi: dict, fund: dict, alert_z: float) -> list:
