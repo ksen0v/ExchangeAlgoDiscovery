@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     timezone: str = ""
     # Simulated exchanges instead of real ones: to try the app without network access.
     demo: bool = False
+    # Module settings (thresholds, windows, on/off), YAML, re-read on change.
+    # Empty = radar.yaml next to the database.
+    config_path: str = ""
+
+    @property
+    def data_dir(self) -> Path:
+        return Path(self.db_path).resolve().parent
+
+    @property
+    def modules_config(self) -> Path:
+        return Path(self.config_path) if self.config_path else self.data_dir / "radar.yaml"
 
 
 settings = Settings()
@@ -78,7 +89,7 @@ VENUES: list[Venue] = [
     Venue("WEEX", _c("weex"), _c("weex")),
     Venue("CoinW", _x("coinw"), _x("coinw")),
     Venue("Ourbit", _x("ourbit"), _x("ourbit")),
-    Venue("Bitunix", None, _x("bitunix")),
+    Venue("Bitunix", _x("noapi"), _x("bitunix")),
     Venue("BitMart", _x("bitmart"), _x("bitmart")),
     Venue("XT.com", _c("xt"), _c("xt")),
     Venue("Phemex", _c("phemex"), _c("phemex")),
@@ -104,7 +115,7 @@ VENUES: list[Venue] = [
     Venue("Deepcoin", _c("deepcoin"), _c("deepcoin")),
     Venue("HitBTC", _c("hitbtc"), _c("hitbtc")),
     Venue("BTSE", _c("btse"), _c("btse")),
-    Venue("BYDFi", None, _c("bydfi")),
+    Venue("BYDFi", _x("noapi"), _c("bydfi")),
     Venue("DigiFinex", _c("digifinex"), _c("digifinex")),
     Venue("BigONE", _c("bigone"), _c("bigone")),
     Venue("Delta", None, _c("delta")),

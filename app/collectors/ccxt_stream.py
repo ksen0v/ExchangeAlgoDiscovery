@@ -16,6 +16,7 @@ from app.symbols import pick_ccxt_market
 log = logging.getLogger(__name__)
 
 MARKETS_TTL = 3600.0
+SEQ_IDS = {"binance", "binanceusdm"}  # trade ids go 1, 2, 3...: a jump = missed trades
 
 
 class CcxtPool:
@@ -81,6 +82,7 @@ class CcxtStream(Stream):
         self._trade_times: deque[float] = deque(maxlen=50)
         self._seen: dict[object, None] = {}  # insertion-ordered set of trade keys
         self.ws_book = False
+        self._last_id = 0
 
     async def resolve(self) -> None:
         self.ex = await self.pool.create(self.ex_id)
@@ -146,6 +148,7 @@ class CcxtStream(Stream):
                     amount=base_units * self.mult,
                     usd=quote_amt * fx,
                     side=side,
+                    tid=str(t.get("id") or ""),
                 )
             )
         return out
@@ -204,6 +207,39 @@ class CcxtStream(Stream):
                 raise
             return await asyncio.wait_for(self.ex.fetch_trades(self.symbol), 20)
 
+    async def backfill(self) -> None:
+        """Trades between the last one before the disconnect and now, over REST (stats, not the tape).
+
+        Filtered by time, not by id: REST and WebSocket ids differ on some venues
+        (Binance REST = aggregated ids). Later WebSocket replays up to that time are dropped.
+        """
+        since = self.last_trade_ts
+        if self.transport != "ws" or not since:
+            return
+        if self.ex is None:
+            await self._recreate()
+        if not self.ex.has.get("fetchTrades"):
+            return
+        trades = [t for t in self.convert(self._fresh(await self._fetch(500))) if t.ts > since]
+        if trades:
+            self.gaps += 1
+            self.backfilled += len(trades)
+            log.info("%s: restored %d trades missed while reconnecting", self.key, len(trades))
+            self.emit_seed(trades)
+
+    def _check_seq(self, raw: list[dict]) -> None:
+        if self.ex_id not in SEQ_IDS:
+            return
+        for t in raw:
+            try:
+                i = int(t.get("id"))
+            except (TypeError, ValueError):
+                return
+            if self._last_id and i > self._last_id + 1:
+                self.gaps += 1
+                log.info("%s: trade ids jumped %d -> %d", self.key, self._last_id, i)
+            self._last_id = max(self._last_id, i)
+
     async def seed(self) -> None:
         # REST-polled streams seed themselves with their first poll.
         if self.transport == "ws" and self.ex.has.get("fetchTrades"):
@@ -222,6 +258,7 @@ class CcxtStream(Stream):
                     self.ex = None
                     raise ConnectionError("no trades for too long, reconnecting") from None
                 raw = self._fresh(raw)
+                self._check_seq(raw)
                 self._trade_times.extend(time.time() for _ in raw)
                 self.emit(self.convert(raw))
 

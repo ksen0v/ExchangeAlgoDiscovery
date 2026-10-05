@@ -11,7 +11,7 @@ from app.collectors.coinw import CoinwStream
 from app.collectors.demo import DemoStream
 from app.collectors.dex import DEX_IDS, DexStream
 from app.collectors.ourbit import OurbitStream
-from app.collectors.rest_venues import CoinDcxStream, PionexStream, ZoomexStream
+from app.collectors.rest_venues import CoinDcxStream, NoPublicApi, PionexStream, ZoomexStream
 from app.config import Source, settings
 
 CUSTOM = {
@@ -23,6 +23,7 @@ CUSTOM = {
     "pionex": PionexStream,
     "coindcx": CoinDcxStream,
     "zoomex": ZoomexStream,
+    "noapi": NoPublicApi,
     **{f"dex_{d}": partial(DexStream, dex=d) for d in DEX_IDS},
 }
 

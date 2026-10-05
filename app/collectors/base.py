@@ -3,7 +3,9 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
+from statistics import median
 
 import aiohttp
 
@@ -45,6 +47,28 @@ def parse_levels(raw, amount_mult: float = 1.0, price_div: float = 1.0) -> list[
     return out
 
 
+class Latency:
+    """Delay of a feed: our receive time minus the venue's trade time, over the last 10 minutes."""
+
+    KEEP = 600.0
+
+    def __init__(self) -> None:
+        self.samples: deque[tuple[float, float]] = deque(maxlen=3000)  # (local ts, delay ms)
+
+    def add(self, local: float, delay_ms: float) -> None:
+        self.samples.append((local, delay_ms))
+
+    def stats(self, now: float) -> tuple[float | None, float | None]:
+        """(median delay ms, jitter ms = p90 - p10) over the window."""
+        while self.samples and self.samples[0][0] < now - self.KEEP:
+            self.samples.popleft()
+        vals = sorted(d for _, d in self.samples)
+        if len(vals) < 3:
+            return None, None
+        n = len(vals)
+        return median(vals), vals[min(n - 1, int(n * 0.9))] - vals[int(n * 0.1)]
+
+
 class NotListed(Exception):
     """The coin is not traded on this venue/market."""
 
@@ -56,7 +80,7 @@ class Stream:
         self.coin = coin.upper()
         self.key = f"{venue}:{kind}"
         self.on_trades = on_trades
-        self.status = "init"  # init | connecting | live | polling | na | error
+        self.status = "init"  # init | connecting | live | polling | na | error | noapi
         self.error = ""
         self.symbol = ""
         self.transport = ""  # ws | rest
@@ -73,6 +97,17 @@ class Stream:
         self.book_status = ""  # "" | live | polling | error | none
         self.book_error = ""
         self._book_at = 0.0
+        # Raw trades before fill merging (recorder); (stream, trades, live)
+        self.on_raw: TradesCallback | None = None
+        # health: delay, reconnects, detected gaps and trades restored over REST
+        self.latency = Latency()
+        self.last_msg = 0.0
+        self.reconnects = 0
+        self.gaps = 0
+        self.backfilled = 0
+        self.last_trade_ts = 0.0  # newest live trade, exchange time
+        self._tick_price = 0.0
+        self._tick_side = "?"
 
     # --- to implement -------------------------------------------------
     async def resolve(self) -> None:
@@ -88,6 +123,9 @@ class Stream:
 
     async def close(self) -> None:
         """Release connections after the task is cancelled (ccxt instances)."""
+
+    async def backfill(self) -> None:
+        """After a reconnect: restore over REST the trades missed while disconnected."""
 
     async def fetch_book(self) -> tuple[list, list]:
         """REST depth -> (bids, asks) via parse_levels. Venues without it have no book."""
@@ -106,6 +144,25 @@ class Stream:
             await asyncio.sleep(max(0.2, BOOK_POLL - (time.monotonic() - started)))
 
     # --- shared ---------------------------------------------------------
+    def _prepare(self, trades: list[Trade], live: bool) -> None:
+        """Receive time, the taker side by the tick rule where the venue gives none, feed delay."""
+        now = time.time()
+        for t in sorted(trades, key=lambda x: x.ts):
+            if not t.ts_local:
+                t.ts_local = now
+            if t.side not in ("buy", "sell"):
+                # uptick = buy, downtick = sell, same price = as the previous trade
+                if self._tick_price and t.price != self._tick_price:
+                    t.side = "buy" if t.price > self._tick_price else "sell"
+                else:
+                    t.side = self._tick_side
+                t.inferred = t.side in ("buy", "sell")
+            self._tick_price, self._tick_side = t.price, t.side
+            if live:
+                self.latency.add(now, (t.ts_local - t.ts) * 1000)
+        if self.on_raw and trades:
+            self.on_raw(self, trades, live)
+
     def emit_seed(self, trades: list[Trade], drop_replays: bool = True) -> None:
         """Emit REST history (stats only, not the tape).
 
@@ -113,6 +170,7 @@ class Stream:
         WS feeds start with a snapshot of the same recent trades.
         """
         if trades:
+            self._prepare(trades, False)
             self.on_trades(self, self._prints(trades), False)
             if drop_replays:
                 self._seed_until = max(t.ts for t in trades)
@@ -125,6 +183,9 @@ class Stream:
             trades = [t for t in trades if t.ts > self._seed_until]
         if not trades:
             return
+        self.last_msg = time.time()
+        self.last_trade_ts = max(self.last_trade_ts, max(t.ts for t in trades))
+        self._prepare(trades, True)
         if self.status in ("connecting", "error"):
             self.status = "polling" if self.transport == "rest" else "live"
         self.error = ""
@@ -166,10 +227,19 @@ class Stream:
         backoff = 2.0
         resolved = False
         book_task: asyncio.Task | None = None
+        failed = False
         try:
             while True:
                 try:
                     self.status = "connecting"
+                    if failed and resolved:
+                        failed = False
+                        try:
+                            await self.backfill()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:  # noqa: BLE001 - best effort
+                            log.info("%s backfill failed: %s", self.key, e)
                     if not resolved:
                         await self.resolve()
                         resolved = True
@@ -191,6 +261,8 @@ class Stream:
                     self.status, self.error = "na", ""
                     return
                 except Exception as e:  # noqa: BLE001 - any network/parse error -> reconnect
+                    failed = True
+                    self.reconnects += 1
                     self.status = "error"
                     self.error = f"{type(e).__name__}: {e}"[:200]
                     log.info("%s error: %s", self.key, self.error)
@@ -211,6 +283,18 @@ class Stream:
             "transport": self.transport,
             "book_status": self.book_status,
             "book_error": self.book_error,
+        }
+
+    def health(self, now: float) -> dict:
+        lat, jitter = self.latency.stats(now)
+        return {
+            **self.info(),
+            "latency_ms": None if lat is None else round(lat),
+            "jitter_ms": None if jitter is None else round(jitter),
+            "last_msg_age": round(now - self.last_msg, 1) if self.last_msg else None,
+            "reconnects": self.reconnects,
+            "gaps": self.gaps,
+            "backfilled": self.backfilled,
         }
 
 

@@ -31,13 +31,16 @@ def _quote_rank(quote: str | None, prefer: list[str]) -> int:
 def pick_ccxt_market(
     markets: dict, coin: str, kind: str, prefer: list[str] | None = None
 ) -> tuple[dict, float] | None:
-    """Best ccxt market for `coin`: kind is "spot" or "perp" (linear preferred)."""
+    """Best ccxt market for `coin`: kind is "spot" or "perp" (linear preferred).
+
+    Markets ccxt marks inactive are kept as a fallback: "active" often means "tradable
+    through the API" (XT.com: openapiEnabled), while the pair trades on the site and its
+    public trades are available. An active market still wins over an inactive one.
+    """
     prefer = prefer or []
     limit = len(set(QUOTE_PREFERENCE) | set(prefer))
     best: tuple[tuple, dict, float] | None = None
     for m in markets.values():
-        if m.get("active") is False:
-            continue
         if kind == "spot" and not m.get("spot"):
             continue
         if kind == "perp" and not m.get("swap"):
@@ -50,7 +53,8 @@ def pick_ccxt_market(
             continue
         # perps: prefer settlement in the quote currency (BTC/USDT:USDT over BTC/USDC:USDT)
         mixed = 0 if kind == "spot" or (m.get("settle") or m.get("quote")) == m.get("quote") else 1
-        rank = (qr, mixed, 0 if m.get("linear", True) else 1, 0 if mult == 1 else 1)
+        inactive = 1 if m.get("active") is False else 0
+        rank = (inactive, qr, mixed, 0 if m.get("linear", True) else 1, 0 if mult == 1 else 1)
         if best is None or rank < best[0]:
             best = (rank, m, mult)
     return (best[1], best[2]) if best else None

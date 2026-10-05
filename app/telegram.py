@@ -21,14 +21,15 @@ def _zone(name: str) -> ZoneInfo | None:
 
 
 def format_alert(a: dict, tz: str = "") -> str:
-    kind = "спот" if a["kind"] == "spot" else "фьючерс"
+    kind = {"spot": " спот", "perp": " фьючерс"}.get(a.get("kind") or "", "")
     t = datetime.fromtimestamp(a["ts"], _zone(tz)).strftime("%H:%M:%S")
     lines = [
-        f"🚨 <b>{html.escape(a['coin'])}</b> · <b>{html.escape(a['venue'])}</b> {kind} · score {a['score']:.0f}",
+        f"🚨 <b>{html.escape(a['coin'])}</b> · <b>{html.escape(a['venue'])}</b>{kind} · score {a['score']:.0f}",
         *(f"• {html.escape(r)}" for r in a["reasons"]),
     ]
     if a.get("price"):
-        lines.append(f"Цена {a['price']:.6g} · объём окна {fmt_usd(a['vol_w'])} · {t}")
+        vol = f" · объём окна {fmt_usd(a['vol_w'])}" if a.get("vol_w") is not None else ""
+        lines.append(f"Цена {a['price']:.6g}{vol} · {t}")
     return "\n".join(lines)
 
 

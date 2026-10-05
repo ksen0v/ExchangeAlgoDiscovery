@@ -26,6 +26,7 @@ class Client:
         self.lite = False  # snapshots without per-stream metrics (the overlay needs only statuses)
         self.walls = True  # order-book wall events
         self.coin: str | None = None  # None = the main coin (follows its changes); else a watched coin
+        self.analytics = False  # full module snapshots (dashboard "Анализ рынка")
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=CLIENT_QUEUE)
         self.overflow = asyncio.Event()
 
@@ -41,6 +42,8 @@ class Client:
             self.walls = bool(msg["walls"])
         if "coin" in msg:
             self.coin = str(msg["coin"] or "").strip().upper() or None
+        if "analytics" in msg:
+            self.analytics = bool(msg["analytics"])
 
     def follows(self, coin: str, primary: str) -> bool:
         return (self.coin or primary) == coin
@@ -110,6 +113,16 @@ class Hub:
                 if full is None:
                     full = orjson.dumps(msg).decode()
                 c.offer(full)
+
+    def broadcast_main(self, msg: dict, analytics_only: bool = False) -> None:
+        """To the clients of the main coin (module snapshots are for the main coin only)."""
+        text = None
+        for c in list(self.clients):
+            if not c.follows(self.primary, self.primary) or (analytics_only and not c.analytics):
+                continue
+            if text is None:
+                text = orjson.dumps(msg).decode()
+            c.offer(text)
 
     def push_trades(self, rows: list[dict]) -> None:
         if self.clients and len(self._tape) < MAX_TAPE_BUFFER:

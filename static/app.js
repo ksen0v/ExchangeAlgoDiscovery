@@ -189,13 +189,13 @@ function renderStreams() {
   $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="12" class="empty">Подключаемся к биржам…</td></tr>`;
 
   const inactive = S.streams.filter((s) => !isActive(s));
-  const label = { na: "нет пары", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
+  const label = { na: "нет пары", noapi: "нет публичного API", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
   $("inactiveSummary").textContent = `Не торгуется / подключение / ошибки (${inactive.length})`;
   $("inactiveList").innerHTML = inactive
     .sort((a, b) => a.status.localeCompare(b.status) || a.key.localeCompare(b.key))
     .map((s) => {
       const [venue] = splitKey(s.key);
-      const err = s.error ? ` <span class="err" title="${esc(s.error)}">⚠</span>` : "";
+      const err = s.error ? ` <span class="${s.status === "noapi" ? "muted" : "err"}" title="${esc(s.error)}">${s.status === "noapi" ? "ⓘ" : "⚠"}</span>` : "";
       return `<div>${esc(venue)}${kindBadge(s.kind)} <span class="${s.status === "error" ? "err" : ""}">${label[s.status] || s.status}</span>${err}</div>`;
     }).join("");
 
@@ -307,9 +307,11 @@ $("hideQuiet").addEventListener("change", () => { S.hideQuiet = $("hideQuiet").c
 
 // ---------- alerts ----------
 function alertHtml(a, fresh) {
-  return `<li class="${fresh ? "fresh" : ""}" data-key="${esc(a.key)}">
+  // module signals (М1–М4) open the analysis screen; tape alerts filter the tape by their venue
+  const target = a.module ? `data-module="${esc(a.module)}"` : `data-key="${esc(a.key)}"`;
+  return `<li class="${fresh ? "fresh" : ""}" ${target}>
     <div class="alert-top"><span class="t">${fmtTime(a.ts)}</span>
-    <span class="v">${esc(a.venue)}</span>${kindBadge(a.kind)}
+    <span class="v">${esc(a.venue)}</span>${a.kind ? kindBadge(a.kind) : ""}
     <span class="muted">${esc(a.coin)}</span>
     <span class="s">${Math.round(a.score)}</span></div>
     <ul class="alert-reasons">${a.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></li>`;
@@ -327,6 +329,7 @@ function addAlert(a) {
   beep();
 }
 $("alertsList").addEventListener("click", (e) => {
+  if (e.target.closest("li[data-module]") && window.setView) { setView("analysis"); return; }
   const li = e.target.closest("li[data-key]");
   if (li) toggleSelected(li.dataset.key, true);
 });
@@ -413,6 +416,7 @@ function setCoin(coin) {
   $("coinInput").placeholder = coin;
   document.title = `${coin} · Manipulation Radar`;
   S.tape = [];
+  if (window.A) { window.A.snap = null; $("regimeStrip").innerHTML = ""; }
   S.selected.clear();
   store.set("selected", []);
   renderChips();
@@ -465,6 +469,7 @@ function openSettings() {
     ? "Telegram настроен."
     : "Telegram не настроен: укажите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env и перезапустите.";
   $("settingsDlg").showModal();
+  if (window.renderModulesSettings) window.renderModulesSettings();
 }
 $("settingsBtn").addEventListener("click", openSettings);
 $("settingsForm").addEventListener("submit", async (e) => {
@@ -476,6 +481,7 @@ $("settingsForm").addEventListener("submit", async (e) => {
   body.wall_ignore_mm = $("settingsForm").elements.wall_ignore_mm.checked;
   try {
     S.config = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
+    if (window.saveModulesSettings) await window.saveModulesSettings();
     toast("Настройки сохранены");
     renderStreams();
   } catch (err) {
@@ -488,7 +494,8 @@ $("tgTest").addEventListener("click", async () => {
 
 // ---------- websocket ----------
 function sendFilter() {
-  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd }));
+  const analytics = !!(window.A && window.A.view === "analysis");
+  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd, analytics }));
 }
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -510,6 +517,10 @@ function connect() {
       if (msg.alert.coin === S.coin) addAlert(msg.alert);
     } else if (msg.type === "coin") {
       setCoin(msg.coin);
+    } else if (msg.type === "analytics") {
+      onAnalytics(msg);
+    } else if (msg.type === "regime") {
+      onRegime(msg);
     }
   };
 }

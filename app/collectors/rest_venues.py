@@ -18,6 +18,23 @@ def _f(x) -> float:
         return 0.0
 
 
+class NoPublicApi(Stream):
+    """A market that trades on the venue's site, but whose data the venue does not publish
+    (no public API): shown as such instead of silently missing or "not listed"."""
+
+    REASON = {
+        "BYDFi": "BYDFi публикует рыночные данные только по фьючерсам; по споту публичного API нет",
+        "Bitunix": "у спота Bitunix нет публичного API (только фьючерсы)",
+    }
+
+    def __init__(self, venue: str, kind: str, coin: str, on_trades: TradesCallback, session=None):
+        super().__init__(venue, kind, coin, on_trades)
+
+    async def run(self) -> None:
+        self.status = "noapi"
+        self.error = self.REASON.get(self.venue, "у биржи нет публичного API для этого рынка")
+
+
 class _RestTrades(Stream):
     interval = 1.0
 

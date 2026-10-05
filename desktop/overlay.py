@@ -29,6 +29,25 @@ PERP = QColor("#8fb3ff")
 BG = (13, 17, 23)
 MONO = ["Cascadia Mono", "Consolas", "JetBrains Mono", "DejaVu Sans Mono", "Menlo", "Courier New"]
 FLOW_SEC = 60
+# regime badge: (text, background) per tone
+REGIME_COLORS = {
+    "bull": ("#5fe0aa", "rgba(46,189,133,45)"),
+    "bear": ("#ff8494", "rgba(246,70,93,45)"),
+    "warn": ("#ffc15c", "rgba(240,160,32,45)"),
+    "flat": ("#a9c4ff", "rgba(143,179,255,40)"),
+    "none": ("#7d8793", "rgba(255,255,255,15)"),
+}
+# short badge texts: the overlay is narrow, the full label is in the tooltip
+REGIME_SHORT = {
+    "Открываются лонги": "лонги+",
+    "Закрываются шорты (сквиз)": "сквиз",
+    "Открываются шорты": "шорты+",
+    "Закрываются лонги": "лонги−",
+    "Набор позиций в боковике": "набор",
+    "Выход из позиций": "выход",
+    "Спотовый рост без плеча": "спот↑",
+    "Неопределённо": "—",
+}
 
 
 def fmt_usd(v: float) -> str:
@@ -277,6 +296,9 @@ class Header(QWidget):
         self.coin.mousePressEvent = lambda _e: overlay.coin_requested.emit()
         self.flow = QLabel()
         self.flow.setToolTip(f"Сумма показанных сделок за {FLOW_SEC} с: покупки / продажи")
+        self.regime = QLabel()  # М3 market regime of the main window (5 min by default)
+        self.regime.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.regime.hide()
         self.info = QLabel()
         self.info.setStyleSheet(f"color:{MUTED.name()};")
         self.info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -284,6 +306,7 @@ class Header(QWidget):
         self.lock_mark.setToolTip("Сквозные клики включены")
         self.lock_mark.hide()
         lay.addWidget(self.coin)
+        lay.addWidget(self.regime)
         lay.addWidget(self.flow)
         lay.addWidget(self.info, 1)
         lay.addWidget(self.lock_mark)
@@ -376,10 +399,32 @@ class OverlayWindow(QWidget):
         if coin and coin != self.coin:
             self.coin = coin
             self.header.coin.setText(coin)
+            self.header.regime.hide()
             self.tape.clear()
             self.flow.clear()
             self._update_flow()
             self._update_info()
+
+    def set_regime(self, msg: dict) -> None:
+        """Badge of the market regime (М3): the main window's regime, all three in the tooltip."""
+        if msg.get("coin") != self.coin:
+            return
+        windows = msg.get("windows") or []
+        main = next((w for w in windows if w.get("w") == msg.get("main")), None)
+        if not main:
+            self.header.regime.hide()
+            return
+        fg, bg = REGIME_COLORS.get(main.get("tone"), REGIME_COLORS["none"])
+        full = str(main.get("label") or "").split(" · ")[0]
+        self.header.regime.setText(REGIME_SHORT.get(full, full))
+        self.header.regime.setStyleSheet(
+            f"color:{fg}; background:{bg}; border-radius:4px; padding:0 5px; font-weight:600;")
+        ru = {"1m": "1м", "5m": "5м", "15m": "15м", "1h": "1ч"}
+        tip = "\n".join(f"{ru.get(w.get('w'), w.get('w'))}: {w.get('label')}" for w in windows)
+        if msg.get("divergence"):
+            tip += "\n⚠ " + msg["divergence"]
+        self.header.regime.setToolTip(f"Режим рынка (М3), окно {ru.get(main.get('w'), main.get('w'))}\n" + tip)
+        self.header.regime.show()
 
     def set_connected(self, ok: bool, message: str = "") -> None:
         self.connected = ok
@@ -404,9 +449,9 @@ class OverlayWindow(QWidget):
             self.show()
 
     def show_alert(self, alert: dict) -> None:
-        kind = "фьючерс" if alert.get("kind") == "perp" else "спот"
+        kind = {"perp": " фьючерс", "spot": " спот"}.get(alert.get("kind") or "", "")
         reasons = "; ".join(alert.get("reasons") or [])
-        self.show_message(f"⚠ {alert.get('venue')} {kind} · скор {alert.get('score', 0):.0f} — {reasons}")
+        self.show_message(f"⚠ {alert.get('venue')}{kind} · скор {alert.get('score', 0):.0f} — {reasons}")
 
     def show_message(self, text: str) -> None:
         self.banner.setText(text)
