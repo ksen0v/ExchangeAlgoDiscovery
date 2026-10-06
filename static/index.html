@@ -182,6 +182,66 @@
     <div id="liqChart" class="chart small-chart"></div>
     <ol id="liqFeed" class="alerts-list liq-feed"></ol>
   </section>
+  <section class="panel a-book">
+    <div class="panel-head"><h2>Стакан · М5</h2><span class="spacer"></span><span class="muted small" id="bookHint"></span></div>
+    <div id="bookChart" class="chart"></div>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr>
+        <th title="Сводный стакан: стаканы всех бирж, сложенные относительно середины спреда каждой биржи">Рынок</th>
+        <th class="r" title="Сколько $ рыночными покупками нужно, чтобы сдвинуть цену вверх на 1% (сумма асков в пределах 1%)">↑ 1%</th>
+        <th class="r">↑ 2%</th><th class="r">↑ 5%</th>
+        <th class="r" title="Сколько $ рыночными продажами нужно, чтобы сдвинуть цену вниз на 1% (сумма бидов в пределах 1%)">↓ 1%</th>
+        <th class="r">↓ 2%</th><th class="r">↓ 5%</th>
+      </tr></thead>
+      <tbody id="ctmBody"></tbody>
+    </table>
+    <details class="small pad"><summary class="muted">По биржам</summary>
+      <table class="grid-table"><thead><tr><th>Биржа</th><th class="r">↑ 1%</th><th class="r">↑ 2%</th><th class="r">↓ 1%</th><th class="r">↓ 2%</th>
+        <th class="r" title="Спред, базисные пункты">Спред</th><th class="r" title="Как далеко от цены видно стакан биржи (вверх / вниз)">Видно стакан</th></tr></thead>
+        <tbody id="ctmVenues"></tbody></table>
+    </details></div>
+  </section>
+  <section class="panel a-bookev">
+    <div class="panel-head"><h2>События стакана · М5</h2><span class="spacer"></span><span class="muted small" id="bookEvHint"></span></div>
+    <div class="pad small">
+      <div id="defendedList"></div>
+      <div id="spoofList"></div>
+    </div>
+    <ol id="bookEvents" class="alerts-list liq-feed"></ol>
+  </section>
+  <section class="panel a-borrow">
+    <div class="panel-head"><h2>Займы для шортов · М6</h2><span class="spacer"></span><span class="muted small" id="borrowHint"></span></div>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr>
+        <th>Где</th>
+        <th class="r" title="Сколько монеты можно занять (у биржи) или свободная ликвидность пула (DeFi)">Доступно</th>
+        <th class="r">Доступно, $</th>
+        <th class="r" title="Доступный объём в долях дневного объёма торгов (оценка по последнему часу)">Доля дн. объёма</th>
+        <th class="r">Δ 1ч</th><th class="r">Δ 4ч</th><th class="r">Δ 24ч</th>
+        <th class="r" title="Ставка займа, % годовых (часовая × 24 × 365)">Ставка</th>
+        <th class="r" title="Ставка / медиана за 30 дней. Больше 3 — «займ иссякает»">× к норме</th>
+        <th class="r" title="Утилизация пула: занято / всего (DeFi)">Утилизация</th>
+        <th>Заметки</th>
+      </tr></thead>
+      <tbody id="borrowBody"></tbody>
+    </table></div>
+  </section>
+  <section class="panel a-index">
+    <div class="panel-head"><h2>Составляющие индекса · М7</h2><div id="indexSrc" class="seg"></div><span class="spacer"></span><span class="muted small" id="indexHint"></span></div>
+    <div class="index-grid">
+      <div class="table-wrap"><table class="grid-table">
+        <thead><tr>
+          <th>Площадка</th><th class="r">Вес</th><th class="r">Цена</th>
+          <th class="r" title="Отклонение от взвешенной медианы остальных составляющих">Отклонение</th>
+          <th class="r" title="Сколько секунд подряд отклонение выше порога">Держится</th>
+          <th class="r" title="Глубина стакана площадки: сколько $ нужно, чтобы сдвинуть её цену на 1% (меньшее из вверх/вниз)">Глубина ±1%</th>
+          <th class="r" title="Вес × отклонение: насколько площадка тянет индекс, %">Влияние</th>
+        </tr></thead>
+        <tbody id="indexBody"></tbody>
+      </table></div>
+      <div id="indexChart" class="chart small-chart"></div>
+    </div>
+  </section>
 </main>
 
 <main class="view journal" id="viewJournal" hidden>

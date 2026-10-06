@@ -13,6 +13,10 @@
   --sell-bg: rgba(246, 70, 93, 0.13);
   --warn: #f0a020;
   --hot: #f6465d;
+  /* chart series (validated for the dark surface: lightness band, colour-blind separation, contrast) */
+  --series-spot: #3987e5;
+  --series-perp: #d95926;
+  --series-3: #199e70;
   --radius: 8px;
   --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
   color-scheme: dark;
@@ -309,6 +313,12 @@ dialog label small { color: var(--muted); }
 .a-oi { grid-column: span 7; max-height: 420px; }
 .a-funding { grid-column: span 7; max-height: 420px; }
 .a-liq { grid-column: span 5; max-height: 420px; }
+.a-book { grid-column: span 7; }
+.a-bookev { grid-column: span 5; max-height: 560px; }
+.a-borrow { grid-column: span 12; max-height: 360px; }
+.a-index { grid-column: span 12; }
+.index-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 8px; }
+@media (max-width: 1100px) { .index-grid { grid-template-columns: 1fr; } }
 @media (max-width: 1100px) {
   .analysis > .panel { grid-column: 1 / -1 !important; }
 }
@@ -328,9 +338,9 @@ dialog label small { color: var(--muted); }
 
 .legend { display: inline-flex; gap: 6px; align-items: center; color: var(--text-2); font-size: 12px; }
 .lg { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-left: 6px; }
-.lg.spot { background: #4fd1d9; }
-.lg.perp { background: #f0b90b; }
-.lg.price { background: #e6edf3; height: 1px; border-top: 1px dashed #e6edf3; }
+.lg.spot { background: var(--series-spot); }
+.lg.perp { background: var(--series-perp); }
+.lg.price { background: var(--text-2); }
 .chart { padding: 6px 8px; min-height: 240px; position: relative; }
 .chart svg { display: block; width: 100%; }
 .chart text { fill: var(--muted); font: 10px var(--mono); }
@@ -382,3 +392,34 @@ th.sorted::after { content: " ▾"; }
   .analysis { padding: 8px; gap: 8px; }
   .journal, .health { padding: 8px; }
 }
+
+/* charts: recessive grid, 2px series lines, text in text colours */
+.chart .grid { stroke: var(--line); stroke-width: 0.6; }
+.chart .zero { stroke: var(--muted); stroke-width: 1; }
+.chart .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart .s-price { fill: none; stroke: var(--text-2); stroke-width: 1.5; }
+.chart .s-spot { fill: none; stroke: var(--series-spot); stroke-width: 2; stroke-linejoin: round; }
+.chart .s-perp { fill: none; stroke: var(--series-perp); stroke-width: 2; stroke-linejoin: round; }
+.chart text.lbl { fill: var(--text-2); font-size: 11px; }
+.chart text.ptitle { fill: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.chart .ice text { fill: var(--text); font-size: 11px; paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.chart .tip { position: absolute; top: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 8px; font: 11px/1.5 var(--mono); color: var(--text); pointer-events: none; white-space: nowrap; z-index: 2; }
+.chart .tip .lg { margin: 0 4px 1px 0; vertical-align: middle; }
+
+.chart .bid { fill: var(--buy); }
+.chart .ask { fill: var(--sell); }
+.chart .gapmark { fill: none; stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.chart text.gaplbl { fill: var(--warn); font-size: 10px; }
+.chart .nodata { stroke: var(--line); stroke-dasharray: 2 3; }
+.chart .thr { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
+.chart .s-ctx { fill: none; stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
+.chart .s1 { fill: none; stroke: var(--series-spot); stroke-width: 2; }
+.chart .s2 { fill: none; stroke: var(--series-perp); stroke-width: 2; }
+.chart .s3 { fill: none; stroke: var(--series-3); stroke-width: 2; }
+.lg.s1 { background: var(--series-spot); } .lg.s2 { background: var(--series-perp); } .lg.s3 { background: var(--series-3); }
+.lg.ctx { background: var(--muted); }
+.defended, .spoofs { margin: 0 0 8px; }
+.defended b, .spoofs b { color: var(--text); }
+tr.agg td { font-weight: 700; }
+tr.low td.lowcell { color: var(--warn); font-weight: 700; }

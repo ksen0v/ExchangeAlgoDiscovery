@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.status)
         tb.addAction(ctl.act_browser)
         tb.addAction(ctl.act_connection)
+        tb.addAction(ctl.act_data)
 
         self.stack = QStackedWidget()
         self.message = QLabel("Запуск сервера…")
@@ -278,6 +279,8 @@ class Controller(QObject):
                 "TELEGRAM_BOT_TOKEN": prefs.telegram_token,
                 "TELEGRAM_CHAT_ID": prefs.telegram_chat_id,
                 "AUTH_TOKEN": "",
+                # read-only exchange keys (М6) live in a .env next to the data: never in the code
+                "RADAR_ENV_FILE": str(data_dir() / ".env"),
             }
             self.server = EmbeddedServer(free_port(prefs.local_port), env)
             self.base_url, self.token = self.server.url, ""
@@ -341,6 +344,20 @@ class Controller(QObject):
         self.act_browser.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(self.web_url())))
         self.act_connection = QAction("🔌 Подключение…", self)
         self.act_connection.triggered.connect(self.open_connection)
+        self.act_data = QAction("📁 Папка данных", self)
+        self.act_data.setToolTip("Настройки модулей (radar.yaml), ключи (.env), записанные данные, журнал")
+        self.act_data.triggered.connect(self.open_data_folder)
+
+    def open_data_folder(self) -> None:
+        """Opens the data folder; creates a .env template there for the read-only exchange keys."""
+        folder = data_dir()
+        env = folder / ".env"
+        if not env.exists():
+            env.write_text(
+                "# Ключ Binance ТОЛЬКО НА ЧТЕНИЕ (без торговли и вывода, с белым списком IP) — для модуля займов М6.\n"
+                "# Ключ с правом торговли или вывода программа использовать не станет. После правки перезапустите программу.\n"
+                "BINANCE_API_KEY=\nBINANCE_API_SECRET=\n", encoding="utf-8")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _slot_menu(self, slot: OverlaySlot, parent: QWidget | None = None) -> QMenu:
         menu = QMenu(parent)

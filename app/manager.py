@@ -21,6 +21,7 @@ from app.repeats import RepeatTracker
 log = logging.getLogger(__name__)
 
 MAX_WATCH = 2  # extra coins next to the main one: three in total
+WALL_LEVELS = 50  # book levels the wall detector looks at (analysis modules get the whole book)
 
 
 def trade_row(coin: str, key: str, t: Trade, rep: tuple[int, int] | None) -> dict:
@@ -103,7 +104,7 @@ class Manager:
             self.hub.push_trades(rows)
 
     def on_book(self, stream: Stream, ts: float, bids: list, asks: list) -> None:
-        events = self.detector.ingest_book(stream.key, ts, bids, asks)
+        events = self.detector.ingest_book(stream.key, ts, bids[:WALL_LEVELS], asks[:WALL_LEVELS])
         if self.analytics:
             self.analytics.on_book(stream, ts, bids, asks)
         if events:

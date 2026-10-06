@@ -23,7 +23,7 @@ BookCallback = Callable[["Stream", float, list[tuple[float, float]], list[tuple[
 
 BOOK_EVERY = 0.5  # s between processed book snapshots (walls need no 100 ms resolution)
 BOOK_POLL = 2.0  # s between REST depth requests where there is no WebSocket book
-BOOK_DEPTH = 50  # levels per side
+BOOK_DEPTH = 200  # levels per side (М5 needs depth up to ±5 %; the wall detector looks at the first 50)
 PRICE_KEYS = ("price", "p", "px")
 AMOUNT_KEYS = ("amount", "qty", "quantity", "size", "vol", "volume", "q", "v", "m", "sz")
 

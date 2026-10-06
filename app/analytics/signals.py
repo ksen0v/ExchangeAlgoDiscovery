@@ -28,6 +28,14 @@ SPECS: dict[str, SignalSpec] = {s.type: s for s in [
     SignalSpec("funding_farm", "М4", "Фандинг-ферма", 0),
     SignalSpec("liq_cascade", "М4", "Каскад", 0),
     SignalSpec("perp_leads", "М4", "Перп ведёт", 0),
+    SignalSpec("lever_drop", "М1", "Падение на плечах", 0),
+    SignalSpec("crowd_short", "М4", "Толпа в шортах", 1),
+    SignalSpec("void_up", "М5", "Пусто сверху", 1),
+    SignalSpec("void_down", "М5", "Пусто снизу", -1),
+    SignalSpec("defended_level", "М5", "Защищаемый уровень", 0),
+    SignalSpec("false_wall", "М5", "Ложная стена", 0),
+    SignalSpec("borrow_dry", "М6", "Займ иссякает", 1),
+    SignalSpec("index_pull", "М7", "Индекс тянут через площадку", 0),
     SignalSpec("tape_anomaly", "Лента", "Аномалия в ленте", 0),
 ]}
 

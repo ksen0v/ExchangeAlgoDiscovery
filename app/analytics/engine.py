@@ -15,8 +15,11 @@ import time
 from collections import defaultdict, deque
 from statistics import median
 
+from app.analytics.book import BUCKET_PCT, BookAnalyzer
+from app.analytics.borrow import BorrowTracker
 from app.analytics.config import ModulesConfig, window_label
 from app.analytics.derivs import (CcxtDerivFeed, DemoDerivFeed, annual_pct, basis_pct, f8, premium_pct)
+from app.analytics.index import IndexTracker
 from app.analytics.journal import Journal
 from app.analytics.recorder import Recorder
 from app.analytics.regime import RegimeTracker, classify, sign
@@ -103,7 +106,10 @@ class _Grid:
 
 class Analytics:
     def __init__(self, cfg: ModulesConfig, store: AnalyticsStore | None, recorder: Recorder | None,
-                 demo: bool = False):
+                 demo: bool = False, session=None, api_key: str = "", api_secret: str = "", clock=None):
+        self.book = BookAnalyzer(cfg)  # М5
+        self.borrow = BorrowTracker(cfg, session, api_key, api_secret, clock, store, demo)  # М6
+        self.index = IndexTracker(cfg, session, demo)  # М7
         self.cfg = cfg
         self.store = store
         self.recorder = recorder
@@ -148,6 +154,14 @@ class Analytics:
         self.journal.reset(coin)
         self.board.reset()
         self.regimes.reset()
+        self.book.reset()
+        self.borrow.reset(coin)
+        self.index.reset(coin)
+        if self.store is not None:
+            try:
+                asyncio.get_running_loop().create_task(self.borrow.load_history(coin))
+            except RuntimeError:  # no loop (tests)
+                pass
 
     def shutdown(self) -> None:
         for f in self.feeds.values():
@@ -155,7 +169,8 @@ class Analytics:
         self.feeds = {}
 
     def wants_books(self) -> bool:
-        return self.cfg.on("delta") or self.cfg.on("funding") or (self.cfg.on("recorder")
+        return self.cfg.on("delta") or self.cfg.on("funding") or self.cfg.on("orderbook") or self.cfg.on(
+            "index") or (self.cfg.on("recorder")
                                                                    and bool(self.cfg.get("record.books")))
 
     # ---- inputs ------------------------------------------------------------
@@ -179,6 +194,8 @@ class Analytics:
                 self.cvd[stream.kind] -= t.usd * w
             if t.ts >= self.last.get(key, (0.0, 0.0))[0]:
                 self.last[key] = (t.ts, t.price)
+        if self.cfg.on("orderbook"):
+            self.book.on_trades(key, trades)
 
     def on_book(self, stream, ts: float, bids: list, asks: list) -> None:
         d, mid = depth_1pct(bids, asks)
@@ -190,6 +207,8 @@ class Analytics:
         if ts - self._depth_last.get(key, 0.0) >= STEP:
             self._depth_last[key] = ts
             self.depth[key].append((ts, d))
+        if self.cfg.on("orderbook") or self.cfg.on("index"):
+            self.book.on_book(key, stream.kind, ts, bids, asks)
         if self.recorder:
             self.recorder.book(stream, ts, bids, asks)
 
@@ -345,8 +364,15 @@ class Analytics:
             self._record(now, delta, oi, fund, liq)
             self.cvd_points.append([minute * 60, round(self.cvd["spot"]), round(self.cvd["perp"]), consensus])
 
+        p2 = self._phase2(now, consensus, delta, fund, streams)
+        if grid_due:
+            for k, v in self._metrics2(p2).items():
+                self.baselines.observe(k, v, now)
+        if minute_due:
+            for k, v in self._metrics2(p2).items():
+                self.baselines.record(k, v, now)
         regime = self._regime(now, delta, oi, liq) if cfg.on("regime") else None
-        alerts = self._signals(now, consensus, delta, oi, fund, liq)
+        alerts = self._signals(now, consensus, delta, oi, fund, liq, p2)
         low = self.baselines.low_history(now)
         self.snapshot = {
             "type": "analytics",
@@ -354,7 +380,7 @@ class Analytics:
             "ts": now,
             "price": consensus,
             "modules": {m: cfg.on(m) for m in ("delta", "open_interest", "regime", "funding", "liquidations",
-                                                 "journal", "recorder")},
+                                                 "orderbook", "borrow", "index", "journal", "recorder")},
             "collect_only": cfg.collect_only,
             "history_days": round(self.baselines.history_days(now), 2),
             "low_history": low,
@@ -366,6 +392,9 @@ class Analytics:
             "funding": fund if cfg.on("funding") else None,
             "liq": self._liq_public(liq) if cfg.on("liquidations") else None,
             "regime": regime,
+            "book": p2["book_public"],
+            "borrow": p2["borrow"],
+            "index": p2["index_public"],
             "signals": self.board.active(),
         }
         return self.snapshot, alerts
@@ -650,7 +679,8 @@ class Analytics:
         return out
 
     # ---- signals -----------------------------------------------------------
-    def _signals(self, now: float, price: float | None, delta: dict, oi: dict, fund: dict, liq: dict) -> list[dict]:
+    def _signals(self, now: float, price: float | None, delta: dict, oi: dict, fund: dict, liq: dict,
+                 p2: dict | None = None) -> list[dict]:
         cfg = self.cfg
         on_lvl = float(cfg.get("alerts.hysteresis_on"))
         off_lvl = float(cfg.get("alerts.hysteresis_off"))
@@ -666,26 +696,37 @@ class Analytics:
             results += self._sig_funding(delta, oi, fund, alert_z)
         if cfg.on("liquidations"):
             results += self._sig_liq(liq)
+        if p2:
+            if cfg.on("orderbook"):
+                results += self._sig_book(now, p2)
+            if cfg.on("borrow"):
+                results += self._sig_borrow(delta, oi, fund, p2)
+            if cfg.on("index"):
+                results += self._sig_index(p2)
 
+        seen = {(t, k) for t, k, _, _ in results}
+        for (t, k), st in list(self.board.states.items()):
+            if st.on and (t, k) not in seen:  # its condition is gone (a level no longer defended, ...)
+                results.append((t, k, None, {}))
         alerts = []
         low = self.baselines.low_history(now)
         for type_, key, strength, payload in results:
             if self.board.update(type_, key, strength, payload, now, on_lvl, off_lvl, cooldown):
                 spec = SPECS[type_]
                 score = SignalBoard.score(strength or 0, on_lvl)
-                venue = key.split(":", 1)[0] if ":" in key else "Все биржи"
+                venue = payload.get("venue") or (key.split(":", 1)[0] if ":" in key else "Все биржи")
                 reasons = list(payload.get("reasons") or [])
                 if low:
                     reasons.append(f"Мало истории: {self.baselines.history_days(now):.1f} дн. из "
                                    f"{min(cfg.get('baseline_days'))}, нормы по текущей сессии")
                 alerts.append({
                     "ts": now, "coin": self.coin, "key": f"{spec.module}:{type_}:{key}", "venue": venue,
-                    "kind": key.split(":", 1)[1] if ":" in key else "", "score": round(score, 1),
+                    "kind": payload.get("kind", key.split(":", 1)[1] if ":" in key else ""), "score": round(score, 1),
                     "reasons": [f"{spec.module} · {payload.get('title') or spec.title}"] + reasons,
                     "price": price, "vol_w": None, "ratio": None, "buy_share": None,
                     "module": spec.module, "type": type_, "title": payload.get("title") or spec.title,
                     "direction": payload.get("direction", spec.direction), "low_history": low,
-                    "data": {k: v for k, v in payload.items() if k not in ("reasons", "title")},
+                    "data": {k: v for k, v in payload.items() if k not in ("reasons", "title", "venue", "kind")},
                 })
         return alerts
 
@@ -722,6 +763,14 @@ class Analytics:
         out.append(("lever_rally", "all", _mins(up, perp_hi, spot_lo), {
             "reasons": [f"За {wl} цена {_fmt_pct(ret)} (порог {thr}%)", nd_txt("perp") + " — выше p90",
                         nd_txt("spot") + " — ниже p50", "Рост идёт на плечах, спот не покупают: хрупко"]}))
+        # «Падение на плечах» (зеркально): цена упала, фьючерсная дельта ниже p10, спот выше медианы
+        down = (-ret / thr) if ret is not None and thr > 0 else None
+        perp_low = _margin_below(r.get("nd_perp"), st["perp"])
+        above_mid = _margin_above(r.get("nd_spot"), st["spot"])
+        spot_hi_mid = None if above_mid is None else 1 + above_mid
+        out.append(("lever_drop", "all", _mins(down, perp_low, spot_hi_mid), {
+            "reasons": [f"За {wl} цена {_fmt_pct(ret)} (порог −{thr}%)", nd_txt("perp") + " — ниже p10",
+                        nd_txt("spot") + " — выше p50", "Падение идёт на плечах, спот не продают: хрупко"]}))
         # «Рост, подтверждённый спросом»
         spot_hi = _margin_above(r.get("nd_spot"), st["spot"])
         out.append(("demand_rally", "all", _mins(spot_hi, (ret / dz) if ret is not None and dz > 0 else None), {
@@ -801,6 +850,16 @@ class Analytics:
                         f"Базис {fund['cross_ref'] or ''} перп к споту {_fmt_pct(basis, 3)}"
                         + (f" (p99 {st_b['p99']:+.3f}%)" if st_b else ""),
                         f"Цена за 5м {_fmt_pct(ret5)} — перестала расти", "Риск слива: толпа в лонгах"]}))
+        b1 = (basis / st_b["p1"]) if basis is not None and st_b and st_b["p1"] < 0 else None
+        cold = max([x for x in (-zf / alert_z if zf is not None else None, b1) if x is not None], default=None)
+        stopped_falling = (min(3.0, dz / max(-ret5, 1e-9)) if ret5 is not None else None)
+        out.append(("crowd_short", "all", _mins(cold, stopped_falling), {
+            "reasons": [f"Фандинг (медиана по биржам, к 8ч) {fund['f8_median']:+.4f}%"
+                        + (f", z {zf:+.1f}" if zf is not None else "") if fund["f8_median"] is not None
+                        else "Фандинг: нет данных",
+                        f"Базис {fund['cross_ref'] or ''} перп к споту {_fmt_pct(basis, 3)}"
+                        + (f" (p1 {st_b['p1']:+.3f}%)" if st_b else ""),
+                        f"Цена за 5м {_fmt_pct(ret5)} — перестала падать", "Риск шорт-сквиза: толпа в шортах"]}))
         doi15 = oi["totals"]["pct"].get(900)
         ret15 = r15.get("ret")
         zs15 = r15.get("z_spot")
@@ -847,6 +906,205 @@ class Analytics:
                         "Движение принудительное; после конца каскада часто бывает разворот",
                         "Binance шлёт не больше одной ликвидации в секунду на символ — сумма занижена"]})]
 
+    # ---- фаза 2: М5 стакан, М6 займы, М7 индекс ----------------------------------
+    def _phase2(self, now: float, price: float | None, delta: dict, fund: dict, streams: dict) -> dict:
+        cfg = self.cfg
+        out: dict = {"book_public": None, "borrow": None, "index_public": None, "index": []}
+        fresh = self.book.fresh(now)
+        aggs = {scope: self.book.aggregate(now, scope) for scope in ("all", "spot", "perp")}
+        out["aggs"] = aggs
+        if cfg.on("orderbook"):
+            def ctm(a: dict | None) -> dict | None:
+                if not a:
+                    return None
+                return {"venues": a["venues"], "up": {str(x): v for x, v in a["ask"].items()},
+                        "down": {str(x): v for x, v in a["bid"].items()}}
+            venues = []
+            for key, m in fresh.items():
+                venues.append({"key": key, "up": {str(x): v for x, v in m["ask"].items()},
+                               "down": {str(x): v for x, v in m["bid"].items()},
+                               "spread_bps": m["spread_bps"], "reach_up": m["reach_ask"], "reach_down": m["reach_bid"]})
+            venues.sort(key=lambda v: -(v["up"].get("1.0", 0) + v["down"].get("1.0", 0)))
+            a = aggs["all"]
+            st_up, st_dn = self.baselines.stats("ctm2_up"), self.baselines.stats("ctm2_down")
+            out["book_public"] = {
+                "all": ctm(a), "spot": ctm(aggs["spot"]), "perp": ctm(aggs["perp"]),
+                "profile": None if not a else {
+                    "bucket_pct": BUCKET_PCT, "bid": [round(x) for x in a["bid_b"]], "ask": [round(x) for x in a["ask_b"]],
+                    "gaps_bid": a["gaps_bid"], "gaps_ask": a["gaps_ask"], "seen_bid": a["bid_seen"],
+                    "seen_ask": a["ask_seen"], "median": a["bucket_median"]},
+                "norm": {"up": st_up and {"p10": st_up["p10"], "p50": st_up["p50"]},
+                         "down": st_dn and {"p10": st_dn["p10"], "p50": st_dn["p50"]}},
+                "venues": venues,
+                "events": [{k: v for k, v in e.items() if k != "pkey"} for e in self.book.recent(now, window=1800)][-80:][::-1],
+                "icebergs": [[e["ts"], e["price"], e["side"]] for e in self.book.recent(now, "iceberg", 4 * 3600)],
+                "defended": self.book.defended(now),
+                "spoofs": self.book.spoof_counts(now),
+            }
+        if cfg.on("borrow"):
+            seed = self.borrow.take_seed()
+            if seed:
+                self.seed_history("borrow_rate:Binance", seed)
+            vol_h = sum(a + b for k, fl in self.flows.items() for i, (a, b) in fl.items() if i * STEP >= now - 3600)
+            rows = []
+            for venue, r in self.borrow.rows.items():
+                if now - r["ts"] > 15 * 60:
+                    continue
+                row = dict(r)
+                if row.get("available") is not None and price:
+                    row["available_usd"] = row["available"] * price
+                if row.get("available_usd") is not None and vol_h > 0:
+                    row["share_day_volume"] = row["available_usd"] / (vol_h * 24)
+                for lbl, sec in (("1h", 3600), ("4h", 4 * 3600), ("24h", 24 * 3600)):
+                    row[f"chg_{lbl}"] = self.borrow.change_pct(venue, now, sec)
+                st = self.baselines.stats30(f"borrow_rate:{venue}") or self.baselines.stats(f"borrow_rate:{venue}")
+                row["rate_norm_apr"] = st["median"] * 24 * 365 * 100 if st and st["median"] else None
+                row["rate_ratio"] = (row["rate_h"] / st["median"]) if st and st["median"] and row.get("rate_h") else None
+                rows.append(row)
+            out["borrow"] = {"rows": sorted(rows, key=lambda r: (r.get("kind") != "CEX", r["venue"])),
+                             "status": dict(self.borrow.status), "key": self.borrow.key_state}
+        if cfg.on("index"):
+            if self.demo:
+                self.index.demo_baskets(sorted(k.split(":", 1)[0] for k in self.kinds if self.kinds[k] == "spot"
+                                               and self._venue_price(k, now)))
+            else:
+                self.index.set_ids(streams)
+
+            def price_of(venue: str) -> float | None:
+                return self._venue_price(f"{venue}:spot", now)
+
+            def depth_of(venue: str) -> float | None:
+                m = fresh.get(f"{venue}:spot")
+                return min(m["ask"].get(1.0, 0.0), m["bid"].get(1.0, 0.0)) if m else None
+
+            ex_index = {src: (self.fund.get(f"{src}:perp") or {}).get("index") for src in ("Binance", "OKX", "Bybit")}
+            baskets = self.index.compute(now, price_of, depth_of, ex_index)
+            out["index"] = baskets
+            out["index_public"] = {"baskets": baskets, "status": dict(self.index.status), "ids": dict(self.index.ids)}
+        return out
+
+    def _metrics2(self, p2: dict) -> dict[str, float | None]:
+        m: dict[str, float | None] = {}
+        for scope, suffix in (("all", ""), ("perp", "p")):
+            a = (p2.get("aggs") or {}).get(scope)
+            if a:
+                m[f"ctm2{suffix}_up"] = a["ask"].get(2.0)
+                m[f"ctm2{suffix}_down"] = a["bid"].get(2.0)
+        for r in (p2.get("borrow") or {}).get("rows") or []:
+            m[f"borrow_rate:{r['venue']}"] = r.get("rate_h")
+            m[f"borrow_avail:{r['venue']}"] = r.get("available") if r.get("available") is not None \
+                else r.get("available_usd")
+        return m
+
+    def _sig_book(self, now: float, p2: dict) -> list:
+        cfg = self.cfg
+        out = []
+        a = (p2.get("aggs") or {}).get("all")
+        for side, type_, word, book_side in (("up", "void_up", "вверх", "ask"), ("down", "void_down", "вниз", "bid")):
+            st = self.baselines.stats(f"ctm2_{side}")
+            x = a[book_side].get(2.0) if a else None
+            gaps = sum(a[f"gaps_{book_side}"][:20]) if a else 0
+            out.append((type_, "all", _margin_below(x, st), {
+                "reasons": [f"Цена сдвига {'+' if side == 'up' else '−'}2% по сводному стакану ({a['venues'] if a else 0} бирж): "
+                            f"{fmt_usd(x or 0)}" + (f" — ниже p10 {fmt_usd(st['p10'])} (норма {fmt_usd(st['p50'])})" if st else ""),
+                            f"Пустых корзин 0.1% в пределах 2% {word}: {gaps}",
+                            f"Цена пролетит {word} без сопротивления"]}))
+        need = int(cfg.get("orderbook.defended_min_events"))
+        for d in self.book.defended(now):
+            venue, kind = d["key"].split(":", 1)
+            side = "покупку" if d["side"] == "bid" else "продажу"
+            out.append(("defended_level", f"{d['key']}|{d['side']}|{d['price']:.10g}", d["count"] / max(1, need), {
+                "venue": venue, "kind": kind, "title": f"Защищаемый уровень на {venue}",
+                "direction": 1 if d["side"] == "bid" else -1,
+                "reasons": [f"Уровень на {side} {d['price']:.6g}: айсбергов {d['icebergs']}, быстрых восстановлений "
+                            f"{d['recoveries']} за {int(cfg.get('orderbook.defended_window_min'))} мин",
+                            f"Исполнено на этой цене всего {fmt_usd(d['usd'])} — больше, чем было видно в стакане",
+                            "Уровень кто-то защищает"]}))
+        need_spoof = int(cfg.get("orderbook.spoof_alert_count"))
+        for key, c in self.book.spoof_counts(now).items():
+            venue, kind = key.split(":", 1)
+            for side, other in (("bid", "ask"), ("ask", "bid")):
+                n, o = c[side], c[other]
+                strength = _mins(n / max(1, need_spoof), (n / (2 * o)) if o else 3.0)
+                word = "покупку" if side == "bid" else "продажу"
+                out.append(("false_wall", f"{key}|{side}", strength, {
+                    "venue": venue, "kind": kind, "title": f"Ложная стена на {venue}",
+                    "direction": -1 if side == "bid" else 1,
+                    "reasons": [f"За час сняли без исполнения {n} крупных заявок на {word} на {fmt_usd(c['usd_' + side])} "
+                                f"(на другой стороне {o})",
+                                f"Заявки крупнее p{int(cfg.get('orderbook.spoof_size_pctl'))} уровней стакана, сняты ближе "
+                                f"{cfg.get('orderbook.spoof_cancel_distance_pct')}% к цене",
+                                "Давление, скорее всего, в обратную сторону: " + ("вниз" if side == "bid" else "вверх")]}))
+        return out
+
+    def _sig_borrow(self, delta: dict, oi: dict, fund: dict, p2: dict) -> list:
+        cfg = self.cfg
+        out = []
+        drop_thr = float(cfg.get("borrow.inventory_drop_pct_4h"))
+        ratio_thr = float(cfg.get("borrow.rate_ratio_alert"))
+        r15 = delta["w"].get(900, {})
+        dz = float(cfg.get("regime.price_deadzone_pct"))
+        for r in (p2.get("borrow") or {}).get("rows") or []:
+            chg4 = r.get("chg_4h")
+            parts = [(-chg4 / drop_thr) if chg4 is not None and drop_thr > 0 else None,
+                     (r["rate_ratio"] / ratio_thr) if r.get("rate_ratio") is not None and ratio_thr > 0 else None]
+            parts = [x for x in parts if x is not None]
+            strength = max(parts) if parts else None
+            reasons = []
+            if chg4 is not None:
+                reasons.append(f"Доступно к займу на {r['venue']} за 4ч {chg4:+.0f}% (порог −{drop_thr:.0f}%)")
+            if r.get("rate_ratio") is not None:
+                reasons.append(f"Ставка {r['rate_apr']:.1f}% годовых — ×{r['rate_ratio']:.1f} к медиане за 30 дней "
+                               f"(порог ×{ratio_thr:g})")
+            f8m, doi = fund.get("f8_median"), oi["totals"]["pct"].get(900)
+            if f8m is not None and f8m < 0 and doi is not None and doi > 0:
+                reasons.append("Фандинг отрицательный и ОИ растёт: много шортов — топливо для шорт-сквиза")
+            if r15.get("ret") is not None and abs(r15["ret"]) < dz and (r15.get("z_spot") or 0) > 0:
+                reasons.append("Цена стоит, а спотовая дельта положительная: похоже на выкуп предложения")
+            if r.get("updated"):
+                reasons.append("Квоты биржа обновляет не мгновенно — время обновления в таблице займов")
+            out.append(("borrow_dry", f"borrow|{r['venue']}", strength, {
+                "venue": r["venue"], "kind": "", "title": f"Займ иссякает на {r['venue']}", "reasons": reasons}))
+        return out
+
+    def _sig_index(self, p2: dict) -> list:
+        from app.analytics.stats import percentile
+
+        cfg = self.cfg
+        out = []
+        thr = float(cfg.get("index.dev_alert_pct"))
+        persist_need = float(cfg.get("index.dev_persist_sec"))
+        perp = (p2.get("aggs") or {}).get("perp")
+        for b in p2.get("index") or []:
+            depths = sorted(r["ctm1"] for r in b["rows"] if r.get("ctm1"))
+            p10 = percentile(depths, 10) if len(depths) >= 3 else (depths[0] if depths else None)
+            for r in b["rows"]:
+                if r.get("dev") is None or not r["weight"]:
+                    strength = None
+                else:
+                    thin = (p10 / r["ctm1"]) if r.get("ctm1") and p10 else None
+                    strength = _mins(abs(r["dev"]) / thr, r["persist"] / max(persist_need, 1e-9), thin)
+                reasons = []
+                if r.get("dev") is not None:
+                    up = r["dev"] > 0
+                    reasons = [
+                        f"{r['venue']} в индексе {b['source']} (вес {r['weight'] * 100:.0f}%): цена {_fmt_pct(r['dev'], 2)} "
+                        f"к остальным составляющим, держится {r['persist']:.0f} с (порог {thr}% и {persist_need:.0f} с)",
+                        f"Глубина {r['venue']} ±1%: {fmt_usd(r['ctm1'] or 0)}" + (f" — среди самых тонких (p10 {fmt_usd(p10)})" if p10 else ""),
+                        f"Вклад в индекс {r['influence']:+.3f}%: индекс и mark тянут {'вверх' if up else 'вниз'}",
+                    ]
+                    side = "up" if up else "down"
+                    st = self.baselines.stats(f"ctm2p_{side}")
+                    x = perp["ask" if up else "bid"].get(2.0) if perp else None
+                    m = _margin_below(x, st)
+                    if strength is not None and m is not None and m >= 1:
+                        strength *= 1.3
+                        reasons.append(f"Усилено: в стакане перпа пусто {'вверх' if up else 'вниз'} (М5)")
+                out.append(("index_pull", f"{b['source']}|{r['venue']}", strength, {
+                    "venue": r["venue"], "kind": "spot", "title": f"Индекс {b['source']} тянут через {r['venue']}",
+                    "direction": (1 if (r.get("dev") or 0) > 0 else -1), "reasons": reasons}))
+        return out
+
     # ---- background --------------------------------------------------------
     async def run(self) -> None:
         """Journal outcomes every 5 s, baseline samples every minute, statistics hourly."""
@@ -870,5 +1128,8 @@ class Analytics:
 
     def health(self, streams: dict, now: float) -> dict:
         return {"feeds": self.feed_status(streams), "baseline_days": round(self.baselines.history_days(now), 2),
-                "metrics": len(self.baselines.cache) or len(self.baselines.session_cache)}
+                "metrics": len(self.baselines.cache) or len(self.baselines.session_cache),
+                "borrow": {"key": self.borrow.key_state, "status": dict(self.borrow.status)},
+                "index": {"status": dict(self.index.status), "ids": dict(self.index.ids)},
+                "books": len(self.book.fresh(now))}
 
