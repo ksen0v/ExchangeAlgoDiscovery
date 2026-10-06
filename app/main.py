@@ -176,8 +176,10 @@ async def lifespan(_: FastAPI):
     S.astore = AnalyticsStore(str(settings.data_dir / f"analytics{suffix}.db"))
     await S.astore.open()
     S.recorder = Recorder(S.modules, settings.data_dir / f"raw{suffix}")
-    S.analytics = Analytics(S.modules, S.astore, S.recorder, demo=settings.demo)
     S.clock = Clock()
+    S.analytics = Analytics(S.modules, S.astore, S.recorder, demo=settings.demo, session=session,
+                            api_key=settings.binance_api_key, api_secret=settings.binance_api_secret,
+                            clock=S.clock)
     S.manager = Manager(S.detector, S.hub, session, analytics=S.analytics, recorder=S.recorder)
 
     tasks = [
@@ -188,6 +190,8 @@ async def lifespan(_: FastAPI):
         asyncio.create_task(config_watch_loop()),
         asyncio.create_task(S.recorder.run()),
         asyncio.create_task(S.analytics.run()),
+        asyncio.create_task(S.analytics.borrow.run()),
+        asyncio.create_task(S.analytics.index.run()),
     ]
     if not settings.demo:
         tasks.append(asyncio.create_task(run_fx_updater()))

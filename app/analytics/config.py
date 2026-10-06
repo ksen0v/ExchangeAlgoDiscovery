@@ -23,6 +23,9 @@ SCHEMA: list[tuple[str, object, str]] = [
     ("modules.regime", True, "М3 — режим рынка (бейдж 1м/5м/15м)"),
     ("modules.funding", True, "М4 — фандинг, премия mark/index, базис"),
     ("modules.liquidations", True, "М4 — ликвидации"),
+    ("modules.orderbook", True, "М5 — стаканы: глубина, цена сдвига, пустоты, айсберги, исчезающие заявки"),
+    ("modules.borrow", True, "М6 — займы для шортов (Binance — нужен ключ только на чтение в .env)"),
+    ("modules.index", True, "М7 — составляющие индекса (mark/index) Binance, OKX, Bybit"),
     ("modules.journal", True, "М15 — журнал сигналов и что было дальше"),
     ("modules.recorder", True, "запись сырых данных на диск (сделки, стаканы, ОИ, фандинг, ликвидации)"),
     ("windows", ["1m", "5m", "15m", "1h"], "окна расчёта"),
@@ -52,23 +55,32 @@ SCHEMA: list[tuple[str, object, str]] = [
     ("funding.farm_max_move_pct", 1.5, "«Фандинг-ферма»: цена «ползёт», если выросла меньше, % за 15 мин"),
     ("funding.big_liquidation_usd_depth", 0.05,
      "ликвидация «крупная» (отдельно в ленте), если больше этой доли depth_1% фьючерсов"),
-    ("orderbook.", None, "М5 — стакан (фаза 2)"),
-    ("orderbook.snapshot_sec", 1, ""),
-    ("orderbook.bucket_pct", 0.1, ""),
-    ("orderbook.depth_levels_pct", [0.5, 1, 2, 5], ""),
-    ("orderbook.gap_share_of_median", 0.2, ""),
-    ("orderbook.iceberg_exec_to_visible", 1.5, ""),
-    ("orderbook.spoof_size_pctl", 99, ""),
-    ("orderbook.spoof_cancel_distance_pct", 0.25, ""),
-    ("borrow.", None, "М6 — займы (фаза 2)"),
-    ("borrow.cex_poll_sec", 60, ""),
-    ("borrow.defi_poll_sec", 180, ""),
-    ("borrow.inventory_drop_pct_4h", 50, ""),
-    ("borrow.rate_ratio_alert", 3, ""),
-    ("index.", None, "М7 — составляющие индекса (фаза 2)"),
-    ("index.constituents_refresh_min", 30, ""),
-    ("index.dev_alert_pct", 0.3, ""),
-    ("index.dev_persist_sec", 10, ""),
+    ("orderbook.", None, "М5 — стакан"),
+    ("orderbook.snapshot_sec", 1, "разбирать стакан биржи не чаще, чем раз в N сек"),
+    ("orderbook.bucket_pct", 0.1, "ширина корзины карты глубины, % (до ±5%)"),
+    ("orderbook.depth_levels_pct", [0.5, 1, 2, 5], "для каких X% считать depth_X% и цену сдвига"),
+    ("orderbook.gap_share_of_median", 0.2, "корзина «пустая», если в ней меньше этой доли медианы корзин"),
+    ("orderbook.iceberg_exec_to_visible", 1.5, "айсберг: исполнено на цене больше, чем столько × видимого"),
+    ("orderbook.iceberg_window_sec", 10, "айсберг: за сколько секунд считать исполненное"),
+    ("orderbook.recovery_fast_sec", 2, "уровень «защищают», если съеденный лучший уровень вернулся за N сек"),
+    ("orderbook.defended_min_events", 3, "«Защищаемый уровень»: столько айсбергов/восстановлений на одной цене"),
+    ("orderbook.defended_window_min", 30, "за сколько минут их считать"),
+    ("orderbook.spoof_size_pctl", 99, "исчезающая заявка: крупнее этого перцентиля уровней биржи"),
+    ("orderbook.spoof_cancel_distance_pct", 0.25, "и снята без исполнения ближе этого расстояния до цены, %"),
+    ("orderbook.spoof_alert_count", 3, "«Ложная стена»: столько исчезающих заявок на стороне за час (и вдвое больше другой стороны)"),
+    ("borrow.", None, "М6 — займы для шортов"),
+    ("borrow.cex_poll_sec", 60, "опрос бирж, сек"),
+    ("borrow.defi_poll_sec", 180, "опрос DeFi (Aave, Morpho, Euler, Kamino… через DefiLlama), сек"),
+    ("borrow.defi", True, "смотреть DeFi-протоколы займов"),
+    ("borrow.inventory_drop_pct_4h", 50, "«Займ иссякает»: доступный объём упал больше чем на N% за 4ч"),
+    ("borrow.rate_ratio_alert", 3, "или ставка выше медианы за 30 дней в N раз"),
+    ("index.", None, "М7 — составляющие индекса"),
+    ("index.constituents_refresh_min", 30, "как часто обновлять состав индекса, мин"),
+    ("index.dev_alert_pct", 0.3, "«Индекс тянут»: площадка отклонилась от остальных больше, %"),
+    ("index.dev_persist_sec", 10, "и держится дольше, сек"),
+    ("index.protection_binance", "clamp:5", "защита индекса Binance: clamp:N — цена обрезается до ±N% от медианы, exclude:N — исключается, none"),
+    ("index.protection_okx", "clamp:3", "OKX (по их правилам: ±3% от медианы)"),
+    ("index.protection_bybit", "clamp:5", "Bybit"),
     ("dex.", None, "М8 — DEX (фаза 3)"),
     ("dex.price_poll_sec", 3, ""),
     ("dex.depth_poll_min", 3, ""),
@@ -243,9 +255,17 @@ class ModulesConfig:
             self.errors = [f"файл не прочитан, действуют прежние настройки: {e}"]
             log.warning("modules config: %s", self.errors[0])
             return
-        self.data, self.errors = self.validate(raw if isinstance(raw, dict) else {})
+        raw = raw if isinstance(raw, dict) else {}
+        self.data, self.errors = self.validate(raw)
         for e in self.errors:
             log.warning("modules config: %s", e)
+        missing = [p for p, _, _ in SCHEMA if not p.endswith(".") and _get(raw, p) is None]
+        if missing and not self.errors:  # a newer version added settings: write them into the file
+            try:
+                self.save()
+                log.info("modules config: added %d new settings to %s", len(missing), self.path)
+            except OSError as e:
+                log.warning("modules config: could not add new settings: %s", e)
 
     @staticmethod
     def validate(raw: dict) -> tuple[dict, list[str]]:

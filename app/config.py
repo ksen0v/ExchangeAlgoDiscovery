@@ -1,4 +1,5 @@
 """Service settings (env) and the list of monitored venues."""
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,8 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT = Path(__file__).resolve().parent.parent
 
 
+# The desktop app keeps its own .env in its data folder (RADAR_ENV_FILE); the project .env is read too.
+ENV_FILES = (ROOT / ".env", Path(os.environ["RADAR_ENV_FILE"])) if os.environ.get("RADAR_ENV_FILE") else (ROOT / ".env",)
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore")
 
     host: str = "0.0.0.0"
     port: int = 8000
@@ -31,6 +36,10 @@ class Settings(BaseSettings):
     # Module settings (thresholds, windows, on/off), YAML, re-read on change.
     # Empty = radar.yaml next to the database.
     config_path: str = ""
+    # М6: Binance margin inventory / borrow rates need a READ-ONLY key (no trading, no withdrawals,
+    # IP whitelist). A key with trading or withdrawal rights is refused, see app/analytics/borrow.py.
+    binance_api_key: str = ""
+    binance_api_secret: str = ""
 
     @property
     def data_dir(self) -> Path:

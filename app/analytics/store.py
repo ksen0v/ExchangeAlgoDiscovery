@@ -38,7 +38,7 @@ DAY = 86400
 SESSION_KEEP = 3600  # seconds of 5-second session samples
 REFRESH_SEC = 3600
 REFRESH_YOUNG_SEC = 300
-SEEDED_PREFIXES = ("doi5:",)  # metrics that can start with history downloaded from the venue
+SEEDED_PREFIXES = ("doi5:", "borrow_rate:")  # metrics that can start with history downloaded from the venue
 
 
 class AnalyticsStore:

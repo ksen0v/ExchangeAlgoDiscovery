@@ -61,6 +61,10 @@ class DemoStream(Stream):
         self.wall: dict | None = None
         self.wall_at = time.time() + rnd.uniform(10, 240)
         self.mm = rnd.random() < 0.2  # a market maker holding big quotes on both sides
+        # where the far book is thin (in 0.1 % steps): mostly the same zone on every venue
+        self.gap_at = random.Random(coin).randint(8, 40) if rnd.random() < 0.95 else rnd.randint(8, 40)
+        self.tick = 0.0
+        self.spoof: dict | None = None
 
     async def resolve(self) -> None:
         await asyncio.sleep(random.uniform(0.2, 1.5))
@@ -106,9 +110,29 @@ class DemoStream(Stream):
 
     def _book(self, now: float) -> tuple[list, list]:
         mid = MARKET.price(self.coin, now) * (1 + self.premium)
-        tick = mid * 1e-4  # 1 bps levels
-        bids = [(mid - tick * (i + 0.5), self.level_usd * math.exp(random.gauss(0, 0.6))) for i in range(40)]
-        asks = [(mid + tick * (i + 0.5), self.level_usd * math.exp(random.gauss(0, 0.6))) for i in range(40)]
+        if not self.tick:
+            self.tick = mid * 1e-4  # 1 bps price grid, fixed like a real tick size
+        tick = self.tick
+        best_bid = math.floor(mid / tick) * tick
+        bids = [(best_bid - tick * i, self.level_usd * math.exp(random.gauss(0, 0.6))) for i in range(40)]
+        asks = [(best_bid + tick * (i + 1), self.level_usd * math.exp(random.gauss(0, 0.6))) for i in range(40)]
+        # the far book every 10 bps up to 5 %, with a thin zone ("gap") that differs per venue
+        gap = self.gap_at
+        for i in range(5, 50):
+            thin = 0.05 if gap <= i < gap + 3 else 1.0
+            bids.append((mid * (1 - i / 1000), thin * self.level_usd * 4 * math.exp(random.gauss(0, 0.5))))
+            asks.append((mid * (1 + i / 1000), thin * self.level_usd * 4 * math.exp(random.gauss(0, 0.5))))
+        # now and then a big order close to the price that is pulled before it gets filled
+        sp = self.spoof
+        if sp is None and random.random() < 0.004:
+            side = random.choice(("bid", "ask"))
+            self.spoof = sp = {"side": side, "price": mid * (1 - 0.0015 if side == "bid" else 1 + 0.0015),
+                               "usd": self.level_usd * 60, "end": now + random.uniform(5, 25)}
+        if sp:
+            if now > sp["end"]:
+                self.spoof = None
+            else:
+                (bids if sp["side"] == "bid" else asks).append((sp["price"], sp["usd"]))
         if self.wall is None and now >= self.wall_at:
             self.wall = {
                 "side": random.choice(("bid", "ask")),
@@ -132,6 +156,8 @@ class DemoStream(Stream):
                     bids.append((math.floor((mid - tick * w["ticks"]) / grid) * grid, w["usd"]))
                 else:
                     asks.append((math.ceil((mid + tick * w["ticks"]) / grid) * grid, w["usd"]))
+        bids.sort(key=lambda lv: -lv[0])
+        asks.sort(key=lambda lv: lv[0])
         return bids, asks
 
     async def book_loop(self) -> None:
