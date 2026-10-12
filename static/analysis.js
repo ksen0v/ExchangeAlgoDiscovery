@@ -57,7 +57,7 @@ function arrow(x) {
 
 // ---------- views ----------
 function setView(v) {
-  if (!["tape", "analysis", "journal", "health"].includes(v)) v = "tape";
+  if (!["tape", "analysis", "journal", "lab", "health"].includes(v)) v = "tape";
   A.view = v;
   store.set("view", v);
   document.querySelectorAll(".view-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
@@ -65,9 +65,11 @@ function setView(v) {
   $("viewAnalysis").hidden = v !== "analysis";
   $("viewJournal").hidden = v !== "journal";
   $("viewHealth").hidden = v !== "health";
+  $("viewLab").hidden = v !== "lab";
   sendFilter();
   clearInterval(A.healthTimer);
   clearInterval(A.journalTimer);
+  clearInterval(A.labTimer);
   if (v === "analysis") {
     if (A.snap) renderAnalysis();
     else api("/api/analytics").then((s) => { if (s.delta !== undefined) { A.snap = s; renderAnalysis(); } }).catch(() => {});
@@ -77,6 +79,9 @@ function setView(v) {
   } else if (v === "health") {
     loadHealth();
     A.healthTimer = setInterval(loadHealth, 2000);
+  } else if (v === "lab") {
+    loadLab(true);
+    A.labTimer = setInterval(loadLab, 5000);
   }
 }
 document.querySelectorAll(".view-btn").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
@@ -665,6 +670,11 @@ function renderHealth(h) {
       <div class="big">${h.dex && h.dex.token ? esc(h.dex.token.chain) : "—"}${h.dex && h.dex.rpc ? " · RPC" : ""}</div>
       <p>DEX: ${esc(Object.entries((h.dex && h.dex.status) || {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "ищем токен")}
       <br>Hyperliquid: адресов ${h.hl ? h.hl.addresses : 0}, позиций ${h.hl ? h.hl.positions : 0}${h.hl && Object.keys(h.hl.status || {}).length ? " · " + esc(Object.entries(h.hl.status).map(([k, v]) => `${k} ${v}`).join(" · ")) : ""}</p></div>
+    ${h.lab ? `<div class="card ${h.lab.state === "error" ? "bad" : ""}"><h4>Лаборатория</h4>
+      <div class="big">${h.lab.model ? "модель есть" : "нет модели"}</div>
+      <p>${h.lab.state === "running" ? "идёт обучение" : h.lab.trained_at ? `обучена ${ago(h.lab.trained_at)} назад` : "ждёт истории"}
+      ${h.lab.verdict && Object.keys(h.lab.verdict).length ? `<br>проверка: рост — ${esc((LAB_VERDICT[h.lab.verdict.up] || ["—"])[0])}, падение — ${esc((LAB_VERDICT[h.lab.verdict.down] || ["—"])[0])}` : ""}
+      ${h.lab.error ? `<br><span class="warn">${esc(h.lab.error)}</span>` : ""}</p></div>` : ""}
     <div class="card ${errs.length ? "bad" : ""}"><h4>Настройки модулей</h4><div class="big">${h.collect_only ? "только сбор" : "алерты вкл"}</div>
       <p>история норм: ${h.baseline_days.toFixed(1)} дн.<br><span class="muted">${esc(h.config.path)}</span>${errs.map((e) => `<br><span class="warn">${esc(e)}</span>`).join("")}</p></div>`;
   const rows = h.streams.filter((s) => A.healthAll || !["na", "noapi"].includes(s.status));
@@ -704,6 +714,7 @@ const MODULE_FIELDS = [
   ["modules.dex", "М8 — DEX: пулы, кто ведёт, арбитраж"],
   ["modules.hyperliquid", "М9 — Hyperliquid: киты, ликвидации, TWAP"],
   ["modules.quality", "М12 — качество площадок"],
+  ["modules.lab", "Лаборатория — своя модель на записанной истории"],
   ["modules.journal", "М15 — журнал сигналов"],
   ["modules.recorder", "Запись сырых данных на диск"],
   ["alerts.telegram", "Алерты модулей в Telegram"],

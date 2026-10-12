@@ -276,7 +276,7 @@ dialog label small { color: var(--muted); }
 }
 
 /* ---------- views: tape / analysis / journal / health ---------- */
-.views { display: flex; gap: 2px; background: var(--panel-2); border-radius: 7px; padding: 2px; }
+.views { display: flex; flex-wrap: wrap; gap: 2px; background: var(--panel-2); border-radius: 7px; padding: 2px; max-width: 100%; }
 .view-btn { background: transparent; color: var(--text-2); font-weight: 600; padding: 4px 10px; border-radius: 5px; }
 .view-btn:hover { color: var(--text); }
 .view-btn.active { background: var(--accent); color: #111; }
@@ -368,7 +368,7 @@ th.sorted::after { content: " ▾"; }
 .liq-feed li.big { font-weight: 700; background: rgba(240, 160, 32, 0.08); }
 .liq-feed .t { font-family: var(--mono); color: var(--muted); }
 
-.journal, .health { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+.journal, .health, .lab { display: flex; flex-direction: column; gap: 12px; padding: 12px; overflow: auto; }
 .journal .panel, .health .panel { max-height: 48vh; }
 .hist { display: inline-flex; gap: 1px; align-items: flex-end; height: 18px; }
 .hist i { width: 7px; background: var(--muted); border-radius: 1px; }
@@ -390,7 +390,8 @@ th.sorted::after { content: " ▾"; }
   .regime-strip { flex-wrap: wrap; }
   .regime-strip .rbadge { max-width: 100%; }
   .analysis { padding: 8px; gap: 8px; }
-  .journal, .health { padding: 8px; }
+  .journal, .health, .lab { padding: 8px; }
+  .lab-check, .lab-imp { grid-template-columns: 1fr !important; }
 }
 
 /* charts: recessive grid, 2px series lines, text in text colours */
@@ -449,3 +450,44 @@ a.addr { color: var(--text); text-decoration: none; border-bottom: 1px dotted va
 .chart .lq-long { fill: var(--sell); }
 .chart .lq-short { fill: var(--buy); }
 #viewAnalysis section[hidden] { display: none !important; }
+
+/* Лаборатория */
+.lab .panel { flex: none; }
+.lab-form { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; padding: 10px 12px 0; }
+.lab-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-2); }
+.lab-form input { width: 110px; }
+.lab-progress { height: 4px; margin: 10px 12px 0; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
+.lab-progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.4s; }
+.card.lab-hot { border-color: var(--accent); }
+.lab-live { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; padding: 10px 12px; }
+.lab-live > div, .lab-check > div, .lab-imp > div { min-width: 0; }
+.lab-live-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.lab-live-head > span:first-of-type { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+.lab-meter { position: relative; height: 10px; margin: 8px 0 4px; background: var(--panel-2); border-radius: 3px; }
+.lab-meter i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; }
+.lab-meter i.pos { background: var(--buy); }
+.lab-meter i.neg { background: var(--sell); }
+.lab-meter b { position: absolute; top: -3px; bottom: -3px; width: 2px; }
+.lab-meter b.base { background: var(--muted); }
+.lab-meter b.thr { background: var(--accent); }
+.lab-why { width: 100%; }
+.lab-why td { font-size: 12px; }
+.lab-why td:first-child { white-space: normal; font-family: inherit; }
+.lab-why .lab-eff { width: 100px; }
+.lab-check p { overflow-wrap: anywhere; }
+.lab-check, .lab-imp { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 10px 12px; }
+.lab-check h3, .lab-imp h3 { margin: 0 0 6px; font-size: 13px; }
+.lab-check p { margin: 4px 0; }
+.lab-calib { margin: 8px 0; }
+.lab-calib > div { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; min-height: 44px; margin-top: 4px; }
+.lab-cal { display: inline-flex; gap: 1px; align-items: flex-end; }
+.lab-cal i { width: 7px; border-radius: 1px; }
+.lab-cal i.p { background: var(--muted); }
+.lab-cal i.pos { background: var(--buy); }
+.lab-cal i.neg { background: var(--sell); }
+.lab-bar { display: grid; grid-template-columns: minmax(110px, 260px) 1fr 40px; gap: 8px; align-items: center; font-size: 12px; padding: 2px 0; }
+.lab-bar span { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-bar i { height: 8px; border-radius: 2px; min-width: 2px; }
+.lab-bar i.pos { background: var(--buy); }
+.lab-bar i.neg { background: var(--sell); }
+.lab-bar b { font-family: var(--mono); font-weight: 400; text-align: right; }

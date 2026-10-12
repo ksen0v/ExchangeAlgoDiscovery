@@ -11,6 +11,7 @@ baseline samples are stored once a minute.
 """
 import asyncio
 import logging
+import math
 import time
 from collections import defaultdict, deque
 from statistics import median
@@ -25,6 +26,8 @@ from app.analytics.leadlag import half_cross, xcorr_lead
 from app.analytics.onchain import DexTracker, explorer_tx
 from app.analytics.quality import VenueQuality
 from app.analytics.journal import Journal
+from app.analytics import labdata
+from app.analytics.labmodel import Lab
 from app.analytics.recorder import Recorder
 from app.analytics.regime import RegimeTracker, classify, sign
 from app.analytics.signals import SPECS, SignalBoard
@@ -113,13 +116,15 @@ class _Grid:
 
 class Analytics:
     def __init__(self, cfg: ModulesConfig, store: AnalyticsStore | None, recorder: Recorder | None,
-                 demo: bool = False, session=None, api_key: str = "", api_secret: str = "", clock=None):
+                 demo: bool = False, session=None, api_key: str = "", api_secret: str = "", clock=None,
+                 lab_dir=None):
         self.book = BookAnalyzer(cfg)  # М5
         self.borrow = BorrowTracker(cfg, session, api_key, api_secret, clock, store, demo)  # М6
         self.index = IndexTracker(cfg, session, demo)  # М7
         self.dex = DexTracker(cfg, session, demo)  # М8
         self.hl = HyperTracker(cfg, session, demo)  # М9
         self.quality = VenueQuality(cfg)  # М12
+        self.lab = Lab(cfg, store, recorder, lab_dir)  # own model on the recorded history
         self.cfg = cfg
         self.store = store
         self.recorder = recorder
@@ -183,6 +188,7 @@ class Analytics:
         self.dex.reset(coin)
         self.hl.reset(coin)
         self.quality.reset()
+        self.lab.reset(coin)
         if self.store is not None:
             try:
                 loop = asyncio.get_running_loop()
@@ -424,6 +430,8 @@ class Analytics:
         p3 = self._phase3(now, consensus, streams, p2)
         regime = self._regime(now, delta, oi, liq) if cfg.on("regime") else None
         alerts = self._signals(now, consensus, delta, oi, fund, liq, p2, p3)
+        if minute_due and cfg.on("lab"):
+            self._record_lab(now, consensus, delta, oi, fund, liq, p2, p3, regime)
         low = self.baselines.low_history(now)
         self.snapshot = {
             "type": "analytics",
@@ -432,7 +440,7 @@ class Analytics:
             "price": consensus,
             "modules": {m: cfg.on(m) for m in ("delta", "open_interest", "regime", "funding", "liquidations",
                                                  "orderbook", "borrow", "index", "dex", "hyperliquid", "quality",
-                                                 "journal", "recorder")},
+                                                 "lab", "journal", "recorder")},
             "collect_only": cfg.collect_only,
             "history_days": round(self.baselines.history_days(now), 2),
             "low_history": low,
@@ -450,6 +458,7 @@ class Analytics:
             "dex": p3["dex"],
             "hl": p3["hl"],
             "quality": p3["quality"],
+            "lab": self.lab.live if cfg.on("lab") else None,
             "signals": self.board.active(),
         }
         return self.snapshot, alerts
@@ -760,6 +769,8 @@ class Analytics:
                 results += self._sig_index(p2)
         if p3:
             results += self._sig_phase3(now, p2 or {}, p3)
+        if cfg.on("lab"):
+            results += self._sig_lab(now)
 
         seen = {(t, k) for t, k, _, _ in results}
         for (t, k), st in list(self.board.states.items()):
@@ -1456,6 +1467,107 @@ class Analytics:
                                 "Крупные позиции становятся мишенью"]}))
         return out
 
+    # ---- laboratory --------------------------------------------------------
+    def _lab_values(self, now: float, price, delta: dict, oi: dict, fund: dict, liq: dict, p2: dict, p3: dict,
+                    regime: dict | None) -> dict[str, float | None]:
+        """This minute's inputs of the laboratory that are not stored for the baselines already."""
+        v: dict[str, float | None] = {"px": price}
+        tot = oi["totals"]["pct"]
+        for w, lbl in ((300, "5m"), (900, "15m"), (3600, "1h")):
+            v[f"oi_pct_{lbl}"] = tot.get(w)
+        if oi["venues"]:
+            dz = float(self.cfg.get("regime.oi_deadzone_pct"))
+            v["oi_up_venues"] = sum(1 for x in oi["venues"].values() if (x["pct"].get(300) or 0) > dz)
+            zs = [x["z5"] for x in oi["venues"].values() if x.get("z5") is not None]
+            v["oi_z_max"] = max(zs) if zs else None
+        v["f8_spread"] = fund.get("f8_spread")
+        v["premium"] = fund.get("premium")
+        if liq["depth"] and 300 in liq["tot"]:
+            lng, sht = liq["tot"][300]
+            v["liq_long_5m_n"], v["liq_short_5m_n"] = lng / liq["depth"], sht / liq["depth"]
+        if self.cfg.on("orderbook") and self.book.fresh(now):
+            sp = self.book.spoof_counts(now)
+            v["spoof_bid"] = sum(d["bid"] for d in sp.values())
+            v["spoof_ask"] = sum(d["ask"] for d in sp.values())
+            v["defended"] = len(self.book.defended(now))
+            v["icebergs_30m"] = len(self.book.recent(now, "iceberg", 1800))
+        rows = (p2.get("borrow") or {}).get("rows") or []
+        ratios = [r["rate_ratio"] for r in rows if r.get("rate_ratio") is not None]
+        chg = [r["chg_4h"] for r in rows if r.get("chg_4h") is not None]
+        v["borrow_ratio_max"] = max(ratios) if ratios else None
+        v["borrow_chg4h_min"] = min(chg) if chg else None
+        devs = [r["dev"] for b in p2.get("index") or [] for r in b.get("rows") or [] if r.get("dev") is not None]
+        v["index_dev_max"] = max(devs, key=abs) if devs else None
+        dx = p3.get("dex")
+        if dx:
+            v["dex_prem"] = dx.get("premium_pct")
+            lead = dx.get("lead") or {}
+            v["dex_lead"] = lead.get("lag") if lead.get("leader") else None
+            dd = dx.get("dex_depth") or {}
+            parts = [cv / dv for side in ("up", "down")
+                     if (dv := (dd.get(side) or {}).get("5.0")) and (cv := (dx["cex_depth"].get(side) or {}).get("5.0"))]
+            v["dex_cheap5"] = math.log(max(parts)) if parts else None
+        hl = p3.get("hl")
+        if hl:
+            dp = delta["depth"].get("perp")
+            net = [w["chg_15m"] for w in hl["whales"] if w.get("chg_15m") is not None]
+            v["hl_whale_net15_n"] = sum(net) / dp if net and dp else None
+            reach = {t["side"]: t.get("reach") for t in hl["targets"]}
+            v["hl_cluster_long_n"] = reach.get("long", 0.0) or 0.0
+            v["hl_cluster_short_n"] = reach.get("short", 0.0) or 0.0
+            v["hl_twap_net"] = sum((1 if t["side"] == "buy" else -1) for w in hl["whales"] for t in w.get("twaps") or [])
+        main = next((w for w in (regime or {}).get("windows", []) if w["w"] == "5m"), None)
+        if main:
+            for k in ("P", "O", "Dp", "Ds"):
+                v[f"regime_{k}"] = main["inputs"].get(k)
+        active = [s for s in self.board.active() if not s["type"].startswith("lab_")]
+        dirs = [s.get("direction", SPECS[s["type"]].direction) for s in active]
+        v["sig_up"] = sum(1 for d in dirs if d > 0)
+        v["sig_down"] = sum(1 for d in dirs if d < 0)
+        return v
+
+    def _record_lab(self, now: float, price, delta, oi, fund, liq, p2, p3, regime) -> None:
+        """Minute row of the laboratory: stored ("lab:*") and kept in memory for the live forecast."""
+        lab = self._lab_values(now, price, delta, oi, fund, liq, p2, p3, regime)
+        for k, val in lab.items():
+            self.baselines.record(f"lab:{k}", val, now)
+        stored = {**self._metrics(delta, oi, fund, liq), **self._metrics2(p2)}
+        row = {k: stored.get(k) for k in labdata.STORED}
+        row.update(lab)
+        try:
+            self.lab.on_minute(now, row)
+        except Exception:  # noqa: BLE001 - a broken model must not stop the dashboard
+            log.exception("lab forecast failed")
+            self.lab.live = None
+
+    def _sig_lab(self, now: float) -> list:
+        live = self.lab.live
+        meta = self.lab.meta or {}
+        out = []
+        for target, type_, word in (("up", "lab_up", "рост"), ("down", "lab_down", "падение")):
+            t = (live or {}).get("targets", {}).get(target)
+            ok = bool(t) and now - live["ts"] < 120 and t["verdict"] == "ok" and bool(self.cfg.get("lab.alerts"))
+            strength = t["strength"] if ok else None
+            reasons = []
+            if t:
+                h, mv = live["horizon_min"], live["move_pct"]
+                reasons.append(f"Вероятность: {word} на {mv:g}% за {h} мин — {t['p'] * 100:.0f}% "
+                               f"(обычно {t['base'] * 100:.0f}%)")
+                if t.get("thr"):
+                    reasons.append(f"Порог сигнала: {t['thr'] * 100:.0f}% ({t['frac'] * 100:.0f}% самых уверенных "
+                                   f"прогнозов на проверке)")
+                if t.get("signal_hit") is not None:
+                    reasons.append(f"На проверке после первого такого сигнала {word} случался в "
+                                   f"{t['signal_hit'] * 100:.0f}% случаев")
+                for r in t["reasons"][:4]:
+                    val = "нет данных" if r["value"] is None else f"{r['value']:.3g}"
+                    reasons.append(f"{r['ru']} = {val} ({'за' if r['effect'] > 0 else 'против'})")
+                if meta.get("trained_at"):
+                    reasons.append(f"Модель обучена на {meta.get('days', 0):.1f} дн. истории")
+            out.append((type_, "all", strength, {"reasons": reasons, "title": f"Лаборатория: {word}",
+                                                 "venue": "Модель"}))
+        return out
+
     # ---- background --------------------------------------------------------
     async def run(self) -> None:
         """Journal outcomes every 5 s, baseline samples every minute, statistics hourly."""
@@ -1471,7 +1583,7 @@ class Analytics:
                     await self.baselines.refresh(now)
                 if now - last_prune >= 86400:
                     last_prune = now
-                    await self.baselines.prune(now)
+                    await self.baselines.prune(now, tuple(labdata.STORED), float(self.cfg.get("lab.keep_days")))
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
@@ -1485,5 +1597,6 @@ class Analytics:
                 "books": len(self.book.fresh(now)),
                 "dex": {"status": dict(self.dex.status), "token": self.dex.token, "rpc": self.dex.rpc_live},
                 "hl": {"status": dict(self.hl.status), "addresses": len(self.hl.registry),
-                       "positions": len(self.hl.positions)}}
+                       "positions": len(self.hl.positions)},
+                "lab": self.lab.health()}
 

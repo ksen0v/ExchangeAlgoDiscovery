@@ -729,6 +729,8 @@ class Controller(QObject):
 
     # ---- self test (CI smoke test of the built .exe) ---------------------
     def selftest(self) -> None:
+        from app.analytics import labmodel  # here: the embedded server has set up the environment by now
+
         out = data_dir()
         main = self.main_slot
         main.overlay.grab().save(str(out / "selftest-overlay.png"))
@@ -743,8 +745,9 @@ class Controller(QObject):
             "coin": main.overlay.coin,
             "regime": main.overlay.header.regime.text(),  # М3 badge (informational)
             "extra": {s.coin: {"trades": s.got_trades, "rows": len(s.overlay.tape.rows)} for s in self.extra_slots},
+            "lab": labmodel.selfcheck(),  # the laboratory's LightGBM loads and trains in the built .exe
         }
-        ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"]
+        ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"] and result["lab"] == "ok"
         ok = ok and all(v["trades"] > 0 for v in result["extra"].values())
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")
