@@ -33,6 +33,7 @@ def robust_stats(values: list[float]) -> dict | None:
         "p10": percentile(vals, 10),
         "p50": percentile(vals, 50),
         "p90": percentile(vals, 90),
+        "p95": percentile(vals, 95),
         "p99": percentile(vals, 99),
         "sorted": vals,
     }

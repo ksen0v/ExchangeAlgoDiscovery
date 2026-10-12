@@ -50,7 +50,7 @@ def trade_record(coin: str, stream, t) -> dict:
         "ts_exchange": int(t.ts * 1000),
         "ts_local": int((t.ts_local or time.time()) * 1000),
         "trade_id": t.tid or None,
-        "taker_address": None,
+        "taker_address": t.taker or None,
     }
 
 

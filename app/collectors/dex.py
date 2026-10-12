@@ -115,7 +115,13 @@ def parse_swaps(data: dict) -> list[tuple[object, Trade]]:
         except (TypeError, ValueError):
             continue
         if usd > 0 and amount > 0 and price > 0:
-            out.append((item.get("id") or a.get("tx_hash"), Trade(ts, price, amount, usd, kind)))
+            try:
+                block = int(a.get("block_number") or 0)
+            except (TypeError, ValueError):
+                block = 0
+            out.append((item.get("id") or a.get("tx_hash"), Trade(
+                ts, price, amount, usd, kind, tid=str(a.get("tx_hash") or ""),
+                taker=str(a.get("tx_from_address") or "").lower(), block=block)))
     return out
 
 
