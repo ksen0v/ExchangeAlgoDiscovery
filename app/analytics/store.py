@@ -39,6 +39,7 @@ SESSION_KEEP = 3600  # seconds of 5-second session samples
 REFRESH_SEC = 3600
 REFRESH_YOUNG_SEC = 300
 SEEDED_PREFIXES = ("doi5:", "borrow_rate:")  # metrics that can start with history downloaded from the venue
+LAB_PREFIX = "lab:"
 
 
 class AnalyticsStore:
@@ -74,8 +75,30 @@ class AnalyticsStore:
         async with self.db.execute("SELECT DISTINCT metric FROM samples WHERE coin = ?", (coin,)) as cur:
             return [r[0] for r in await cur.fetchall()]
 
-    async def prune_samples(self, before: float) -> int:
-        cur = await self.db.execute("DELETE FROM samples WHERE ts < ?", (int(before),))
+    async def count(self, coin: str, metric: str) -> int:
+        async with self.db.execute("SELECT COUNT(*) FROM samples WHERE coin = ? AND metric = ?", (coin, metric)) as cur:
+            return (await cur.fetchone())[0]
+
+    async def coins_with(self, metric: str) -> list[tuple[str, int]]:
+        """Coins that have this metric, with the number of stored minutes (index walks, no table scan)."""
+        async with self.db.execute(
+            "WITH RECURSIVE c(coin) AS (SELECT MIN(coin) FROM samples UNION ALL "
+            "SELECT (SELECT MIN(coin) FROM samples WHERE coin > c.coin) FROM c WHERE c.coin IS NOT NULL) "
+            "SELECT coin FROM c WHERE coin IS NOT NULL"
+        ) as cur:
+            coins = [r[0] for r in await cur.fetchall()]
+        out = [(c, await self.count(c, metric)) for c in coins]
+        return sorted([x for x in out if x[1]], key=lambda x: -x[1])
+
+    async def prune_samples(self, before: float, keep: tuple[str, ...] = (), keep_before: float | None = None) -> int:
+        """Delete samples older than `before`; the metrics in `keep` and "lab:*" live until `keep_before`."""
+        if not keep or keep_before is None or keep_before >= before:
+            cur = await self.db.execute("DELETE FROM samples WHERE ts < ?", (int(before),))
+        else:
+            marks = ",".join("?" * len(keep))
+            cur = await self.db.execute(
+                f"DELETE FROM samples WHERE ts < ? AND (ts < ? OR (metric NOT IN ({marks}) AND metric NOT LIKE 'lab:%'))",
+                (int(before), int(keep_before), *keep))
         await self.db.commit()
         return cur.rowcount
 
@@ -222,6 +245,8 @@ class Baselines:
         cache = {}
         oldest = None
         for metric in await self.store.metrics(coin):
+            if metric.startswith(LAB_PREFIX):  # the laboratory's own rows: no baselines needed
+                continue
             rows = await self.store.samples(coin, metric, now - longest * DAY)
             if not rows:
                 continue
@@ -243,7 +268,9 @@ class Baselines:
             self.cache = cache
             self.oldest = oldest
 
-    async def prune(self, now: float) -> None:
+    async def prune(self, now: float, keep: tuple[str, ...] = (), keep_days: float = 0) -> None:
+        """Older than the longest baseline period; the laboratory's metrics (`keep`) for keep_days."""
         if self.store is not None:
-            await self.store.prune_samples(now - (max(self.days or (30,)) + 1) * DAY)
+            before = now - (max(self.days or (30,)) + 1) * DAY
+            await self.store.prune_samples(before, keep, min(before, now - keep_days * DAY) if keep_days else None)
 

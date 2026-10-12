@@ -18,6 +18,7 @@
     <button class="view-btn" data-view="tape" title="Биржи, лента принтов, алерты, плиты">Лента</button>
     <button class="view-btn" data-view="analysis" title="М1–М4: дельта спот/фьючерсы, открытый интерес, режим, фандинг, базис, ликвидации">Анализ рынка</button>
     <button class="view-btn" data-view="journal" title="М15: все сигналы и что было с ценой дальше">Журнал сигналов</button>
+    <button class="view-btn" data-view="lab" title="Своя модель, обученная на записанной истории: закономерности и прогноз">Лаборатория</button>
     <button class="view-btn" data-view="health" title="Связь с биржами, задержки, пропуски, часы, запись данных">Здоровье <span id="healthWarn" class="count"></span></button>
   </nav>
   <div class="meta">
@@ -338,6 +339,48 @@
   </section>
 </main>
 
+<main class="view lab" id="viewLab" hidden>
+  <div class="cards" id="labCards"></div>
+  <section class="panel">
+    <div class="panel-head"><h2>Обучение</h2><span class="spacer"></span><span class="small muted" id="labStatus"></span></div>
+    <form class="lab-form" id="labForm">
+      <label>Движение цены от, %<input name="move_pct" type="number" step="any" min="0.05" max="50" required></label>
+      <label>за, минут<input name="horizon_min" type="number" step="1" min="1" max="1440" required></label>
+      <label>История, дней<input name="days" type="number" step="any" min="1" required></label>
+      <label>Учиться на<select name="scope"><option value="coin">этой монете</option><option value="all">всех монетах с историей</option></select></label>
+      <button type="submit" id="labTrain">Обучить</button>
+    </form>
+    <div class="lab-progress" id="labProgress" hidden><i></i></div>
+    <p class="pad small muted">Модель учится на минутных снимках всех модулей (дельта, ОИ, фандинг, стаканы, ликвидации, DEX, Hyperliquid, сигналы)
+      и отвечает на два вопроса: «вырастет ли цена на X% в ближайшие N минут» и «упадёт ли». Проверка честная: история делится на периоды,
+      модель учится на прошлом и оценивается только на следующем периоде, которого не видела. Сигналы «Лаборатория» включаются,
+      только если проверка пройдена. Модель переобучается сама раз в сутки — рынок меняется.</p>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Прогноз сейчас</h2><span class="spacer"></span><span class="small muted" id="labLiveHint"></span></div>
+    <div id="labLive" class="lab-live"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Проверка на данных, которых модель не видела</h2></div>
+    <div id="labCheck" class="lab-check"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>На что модель опирается</h2><span class="spacer"></span><span class="small muted">доля вклада показателя в решения модели</span></div>
+    <div id="labImportance" class="lab-imp"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Взаимосвязи в данных</h2><span class="spacer"></span><span class="small muted" id="labRelHint"></span></div>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Что</th><th>Показатель</th><th>Когда он</th><th class="r" title="Сколько минут истории попало в эту группу">Минут</th>
+        <th class="r" title="Как часто после таких минут случалось движение">Случалось</th><th class="r" title="Как часто в среднем по всем минутам">Обычно</th>
+        <th class="r">Во сколько раз</th><th class="r" title="Средний ход цены через N минут после таких минут">Ход цены</th>
+        <th class="r" title="Надёжность: больше 3 — вряд ли случайность (с поправкой на то, что соседние минуты похожи)">z</th>
+        <th title="Держится ли в первых 3/4 истории и в последней 1/4 по отдельности">Устойчиво</th></tr></thead>
+      <tbody id="labRelations"></tbody>
+    </table></div>
+  </section>
+</main>
+
 <main class="view health" id="viewHealth" hidden>
   <div class="cards" id="healthCards"></div>
   <section class="panel">
@@ -402,6 +445,7 @@
 
 <div id="toast" class="toast" hidden></div>
 <script src="/static/app.js"></script>
+<script src="/static/lab.js"></script>
 <script src="/static/analysis.js"></script>
 </body>
 </html>

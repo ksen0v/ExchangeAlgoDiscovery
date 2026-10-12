@@ -149,3 +149,21 @@ def test_ws_analytics_only_on_request(client):
                 break
         else:
             raise AssertionError("no analytics snapshot")
+
+
+def test_lab_endpoints(client):
+    import time as _t
+
+    d = client.get("/api/lab").json()
+    assert d["coin"] == "DEMOX" and d["enabled"] and d["model"] is None and d["live"] is None
+    assert {"lab_days", "metric_days", "raw_days", "coins"} <= set(d["coverage"])
+    assert d["settings"]["horizon_min"] == 15 and d["settings"]["move_pct"] == 1.0
+    assert client.post("/api/lab/train", json={"horizon_min": 0}).status_code == 400
+    r = client.post("/api/lab/train", json={"horizon_min": 15, "move_pct": 1})
+    assert r.status_code == 200
+    deadline = _t.time() + 15
+    while _t.time() < deadline and client.get("/api/lab").json()["status"]["state"] == "running":
+        _t.sleep(0.2)
+    st = client.get("/api/lab").json()["status"]
+    assert st["state"] == "error" and "мало истории" in st["error"]  # a fresh demo has no history yet
+    assert client.get("/api/health").json()["lab"]["state"] == "error"

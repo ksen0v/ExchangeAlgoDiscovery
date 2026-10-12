@@ -180,7 +180,7 @@ async def lifespan(_: FastAPI):
     S.clock = Clock()
     S.analytics = Analytics(S.modules, S.astore, S.recorder, demo=settings.demo, session=session,
                             api_key=settings.binance_api_key, api_secret=settings.binance_api_secret,
-                            clock=S.clock)
+                            clock=S.clock, lab_dir=settings.data_dir / f"lab{suffix}")
     S.manager = Manager(S.detector, S.hub, session, analytics=S.analytics, recorder=S.recorder)
 
     tasks = [
@@ -195,6 +195,7 @@ async def lifespan(_: FastAPI):
         asyncio.create_task(S.analytics.index.run()),
         asyncio.create_task(S.analytics.dex.run()),
         asyncio.create_task(S.analytics.hl.run()),
+        asyncio.create_task(S.analytics.lab.run()),
     ]
     if not settings.demo:
         tasks.append(asyncio.create_task(run_fx_updater()))
@@ -434,6 +435,42 @@ async def get_journal_report(coin: str | None = None, days: float = 30) -> dict:
     since = time.time() - max(0.0, days) * 86400
     rows = await S.astore.signals(coin.upper() if coin else None, since, 100_000)
     return {**journal_report(rows), "days": days, "coin": coin.upper() if coin else None}
+
+
+class LabTrainIn(BaseModel):
+    horizon_min: int | None = None
+    move_pct: float | None = None
+    scope: str | None = None  # "coin" | "all"
+    days: float | None = None
+
+
+@app.get("/api/lab")
+async def get_lab() -> dict:
+    """Laboratory: how much history there is, training status, the model's check report, live forecast."""
+    lab = S.analytics.lab
+    return {
+        "coin": S.manager.coin,
+        "enabled": S.modules.on("lab"),
+        "status": lab.status,
+        "coverage": await lab.coverage(S.manager.coin),
+        "model": lab.summary(),
+        "live": lab.live,
+        "settings": {k: S.modules.get(f"lab.{k}") for k in ("horizon_min", "move_pct", "train_days", "min_days",
+                                                             "scope", "auto_retrain_hours", "alerts")},
+        "demo": settings.demo,
+    }
+
+
+@app.post("/api/lab/train")
+async def post_lab_train(body: LabTrainIn) -> dict:
+    """Start training on the recorded history of the main coin (in the background)."""
+    try:
+        S.analytics.lab.start(body.horizon_min, body.move_pct, body.scope, body.days)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"ok": True, "status": S.analytics.lab.status}
 
 
 @app.post("/api/telegram/test")

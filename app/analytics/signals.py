@@ -41,6 +41,8 @@ SPECS: dict[str, SignalSpec] = {s.type: s for s in [
     SignalSpec("hl_whale_add", "М9", "Кит набирает", 0),
     SignalSpec("hl_target", "М9", "Мишень рядом", 0),
     SignalSpec("hl_whale_unload", "М9", "Публичный кит разгружается", 0),
+    SignalSpec("lab_up", "Лаб", "Лаборатория: рост", 1),
+    SignalSpec("lab_down", "Лаб", "Лаборатория: падение", -1),
     SignalSpec("tape_anomaly", "Лента", "Аномалия в ленте", 0),
 ]}
 
