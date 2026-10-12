@@ -36,6 +36,11 @@ SPECS: dict[str, SignalSpec] = {s.type: s for s in [
     SignalSpec("false_wall", "М5", "Ложная стена", 0),
     SignalSpec("borrow_dry", "М6", "Займ иссякает", 1),
     SignalSpec("index_pull", "М7", "Индекс тянут через площадку", 0),
+    SignalSpec("dex_leads_thin", "М8", "Ведёт DEX, пул тонкий", 0),
+    SignalSpec("dex_whale", "М8", "Кит на DEX", 0),
+    SignalSpec("hl_whale_add", "М9", "Кит набирает", 0),
+    SignalSpec("hl_target", "М9", "Мишень рядом", 0),
+    SignalSpec("hl_whale_unload", "М9", "Публичный кит разгружается", 0),
     SignalSpec("tape_anomaly", "Лента", "Аномалия в ленте", 0),
 ]}
 

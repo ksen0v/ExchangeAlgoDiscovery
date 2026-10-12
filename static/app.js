@@ -143,6 +143,14 @@ $("wallForm").addEventListener("submit", async (e) => {
   }
 });
 
+// М12: venue quality 0..1; below the threshold the venue is left out of the delta / regime sums
+function qualityCell(score) {
+  if (score == null) return '<span class="dim" title="Мало данных: оценка появится через ~30 минут торгов">—</span>';
+  const thr = (window.A && A.snap && A.snap.quality && A.snap.quality.exclude_below) || 0.3;
+  const bad = score < thr;
+  return `<span class="${bad ? "q-bad" : score < 0.6 ? "warn" : ""}" title="${bad ? "Исключена из сумм: похоже на нарисованный объём" : "Качество площадки"}">${score.toFixed(2)}</span>`;
+}
+
 function isActive(s) {
   return (s.status === "live" || s.status === "polling") && s.price != null;
 }
@@ -178,15 +186,16 @@ function renderStreams() {
       <td>${algo}</td>
       <td class="wallcell">${wall}</td>
       <td class="r">${share}</td>
+      <td class="r">${qualityCell(s.quality)}</td>
       <td class="r score"><b>${s.score.toFixed(0)}</b></td>
       <td>${sparkSvg(s.spark || [])}</td>
     </tr>`;
     if ((hot || warm) && s.reasons && s.reasons.length) {
-      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="12">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
+      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="13">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
     }
     return html;
   });
-  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="12" class="empty">Подключаемся к биржам…</td></tr>`;
+  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="13" class="empty">Подключаемся к биржам…</td></tr>`;
 
   const inactive = S.streams.filter((s) => !isActive(s));
   const label = { na: "нет пары", noapi: "нет публичного API", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };

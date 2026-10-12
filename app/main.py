@@ -101,7 +101,8 @@ async def tick_loop() -> None:
             S.manager.sync_connected()
             metrics, alerts = S.detector.tick()
             empty = {"score": 0, "reasons": []}
-            rows = [{**info, **metrics.get(info["key"], empty)} for info in S.manager.infos()]
+            rows = [{**info, **metrics.get(info["key"], empty), "quality": S.analytics.quality.score(info["key"])}
+                    for info in S.manager.infos()]
             now = time.time()
             S.hub.broadcast_snapshot(
                 {
@@ -192,6 +193,8 @@ async def lifespan(_: FastAPI):
         asyncio.create_task(S.analytics.run()),
         asyncio.create_task(S.analytics.borrow.run()),
         asyncio.create_task(S.analytics.index.run()),
+        asyncio.create_task(S.analytics.dex.run()),
+        asyncio.create_task(S.analytics.hl.run()),
     ]
     if not settings.demo:
         tasks.append(asyncio.create_task(run_fx_updater()))
@@ -394,7 +397,7 @@ async def get_health() -> dict:
     return {
         "ts": now,
         "coin": S.manager.coin,
-        "streams": S.manager.health(now),
+        "streams": [{**h, "quality": S.analytics.quality.score(h["key"])} for h in S.manager.health(now)],
         **S.analytics.health(S.manager.streams, now),
         "clock": S.clock.status(),
         "recorder": S.recorder.status(),

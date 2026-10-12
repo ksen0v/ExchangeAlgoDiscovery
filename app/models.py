@@ -13,7 +13,9 @@ class Trade:
     fills: int = 1  # how many exchange fills were merged into this print
     inferred: bool = False  # side computed by the tick rule, not given by the venue
     ts_local: float = 0.0  # when we received it, seconds
-    tid: str = ""  # venue trade id, if any
+    tid: str = ""  # venue trade id, if any (DEX: transaction hash)
+    taker: str = ""  # aggressor's address on transparent venues (Hyperliquid, DEX), else ""
+    block: int = 0  # DEX: block number (sandwich filter)
 
 
 def aggregate_fills(trades: list[Trade]) -> list[Trade]:
@@ -25,7 +27,7 @@ def aggregate_fills(trades: list[Trade]) -> list[Trade]:
     out: list[Trade] = []
     for t in sorted(trades, key=lambda x: x.ts):
         last = out[-1] if out else None
-        if last and last.side == t.side and abs(last.ts - t.ts) < 0.0005:
+        if last and last.side == t.side and abs(last.ts - t.ts) < 0.0005 and last.taker == t.taker:
             usd = last.usd + t.usd
             amount = last.amount + t.amount
             last.price = usd / amount if amount else t.price
@@ -34,5 +36,6 @@ def aggregate_fills(trades: list[Trade]) -> list[Trade]:
             last.inferred = last.inferred or t.inferred
             last.ts_local = max(last.ts_local, t.ts_local)
         else:
-            out.append(Trade(t.ts, t.price, t.amount, t.usd, t.side, t.fills, t.inferred, t.ts_local, t.tid))
+            out.append(Trade(t.ts, t.price, t.amount, t.usd, t.side, t.fills, t.inferred, t.ts_local, t.tid,
+                             t.taker, t.block))
     return out

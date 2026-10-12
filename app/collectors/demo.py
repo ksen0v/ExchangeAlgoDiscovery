@@ -15,6 +15,7 @@ from app.collectors.base import NotListed, Stream, TradesCallback
 from app.models import Trade
 
 TICK = 0.25
+DEX_NAMES = {"Uniswap", "PancakeSwap", "Raydium", "Aerodrome", "Orca", "Meteora", "PumpSwap"}
 
 
 class _Market:
@@ -53,13 +54,16 @@ class DemoStream(Stream):
         rnd = random.Random(f"{venue}:{kind}:{coin}")
         self.listed = rnd.random() > 0.12
         self.rate = rnd.choice([0.3, 0.6, 1.0, 2.0, 4.0]) * (1.6 if kind == "perp" else 1.0)
+        if venue in DEX_NAMES:
+            self.rate *= 0.15  # on-chain swaps are rare next to exchange prints
         self.median_usd = rnd.choice([80, 200, 500, 1200])
         self.premium = rnd.gauss(0, 3) / 1e4
         self.algo: dict | None = None
         self.algo_at = time.time() + rnd.uniform(15, 300)
         self.level_usd = self.median_usd * rnd.uniform(2, 6)
         self.wall: dict | None = None
-        self.wall_at = time.time() + rnd.uniform(10, 240)
+        # only some venues have a player who leans walls on the price
+        self.wall_at = time.time() + rnd.uniform(10, 240) if rnd.random() < 0.25 else float("inf")
         self.mm = rnd.random() < 0.2  # a market maker holding big quotes on both sides
         # where the far book is thin (in 0.1 % steps): mostly the same zone on every venue
         self.gap_at = random.Random(coin).randint(8, 40) if rnd.random() < 0.95 else rnd.randint(8, 40)
@@ -124,7 +128,7 @@ class DemoStream(Stream):
             asks.append((mid * (1 + i / 1000), thin * self.level_usd * 4 * math.exp(random.gauss(0, 0.5))))
         # now and then a big order close to the price that is pulled before it gets filled
         sp = self.spoof
-        if sp is None and random.random() < 0.004:
+        if sp is None and random.random() < 0.0008:
             side = random.choice(("bid", "ask"))
             self.spoof = sp = {"side": side, "price": mid * (1 - 0.0015 if side == "bid" else 1 + 0.0015),
                                "usd": self.level_usd * 60, "end": now + random.uniform(5, 25)}
@@ -148,7 +152,7 @@ class DemoStream(Stream):
         if w:
             if now > w["end"]:
                 self.wall = None
-                self.wall_at = now + random.uniform(60, 400)
+                self.wall_at = now + random.uniform(180, 900)
             else:
                 # re-placed on a 3-tick grid: it follows (and leans on) the price
                 grid = tick * 3

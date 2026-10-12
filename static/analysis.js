@@ -8,6 +8,7 @@ const A = {
   venueWin: store.get("venueWin", "5m"),
   venueSort: store.get("venueSort", "abs"),
   indexSrc: store.get("indexSrc", "Binance"),
+  group: store.get("analysisGroup", "flow"),
   modules: null,
   healthTimer: null,
   journalTimer: null,
@@ -121,6 +122,9 @@ function renderAnalysis() {
   renderBook(s.book);
   renderBorrow(s.borrow);
   renderIndex(s.index);
+  renderDex(s.dex);
+  renderHl(s.hl);
+  renderQuality(s.quality);
 }
 
 function renderRegime(r) {
@@ -153,7 +157,7 @@ function renderRegime(r) {
 function renderSignals(list) {
   $("signalsHint").textContent = list.length ? `активно: ${list.length}` : "";
   $("signalsList").innerHTML = list.map((g) => {
-    const [venue, kind] = g.key.includes(":") ? splitKey(g.key) : ["Все биржи", ""];
+    const [venue, kind] = g.venue ? [g.venue, g.kind || ""] : g.key.includes(":") ? splitKey(g.key) : ["Все биржи", ""];
     return `<li class="signal-item"><div class="alert-top"><span class="t">${fmtTime(g.since)}</span>
       <span class="v">${esc(g.title)}</span><span class="muted">${esc(g.module)} · ${esc(venue)}${kind ? " " + kind : ""}</span>
       <span class="s">${ago(g.since)}</span></div>
@@ -280,8 +284,9 @@ function renderVenues(d) {
   $("venueBody").innerHTML = rows.map((r) => {
     const [venue, kind] = splitKey(r.key);
     return `<tr><td class="venue">${esc(venue)}${kindBadge(kind)}</td><td class="r pos">${fmtUsd(r.buy)}</td><td class="r neg">${fmtUsd(r.sell)}</td>
-      <td class="r">${fmtSigned(r.delta)}</td><td>${dbar(r.delta, max)} <span class="zb">${(Math.abs(r.delta) / totalAbs * 100).toFixed(0)}%</span></td></tr>`;
-  }).join("") || '<tr><td colspan="5" class="empty">Сделок за окно нет</td></tr>';
+      <td class="r">${fmtSigned(r.delta)}</td><td>${dbar(r.delta, max)} <span class="zb">${(Math.abs(r.delta) / totalAbs * 100).toFixed(0)}%</span></td>
+      <td class="r">${qualityCell(qualityOf(r.key))}</td></tr>`;
+  }).join("") || '<tr><td colspan="6" class="empty">Сделок за окно нет</td></tr>';
 }
 $("venueWin").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-w]");
@@ -656,6 +661,10 @@ function renderHealth(h) {
       <div class="big">${h.books || 0} стаканов</div>
       <p>Binance-ключ: ${esc((h.borrow && h.borrow.key) || "—")}<br>${esc(Object.entries((h.borrow && h.borrow.status) || {}).map(([k, v]) => `${k}: ${v}`).join(" · ") || "займы: ждём опроса")}
       <br>Индекс: ${esc(Object.entries((h.index && h.index.status) || {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "ждём перп монеты")}</p></div>
+    <div class="card"><h4>DEX (М8) и Hyperliquid (М9)</h4>
+      <div class="big">${h.dex && h.dex.token ? esc(h.dex.token.chain) : "—"}${h.dex && h.dex.rpc ? " · RPC" : ""}</div>
+      <p>DEX: ${esc(Object.entries((h.dex && h.dex.status) || {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "ищем токен")}
+      <br>Hyperliquid: адресов ${h.hl ? h.hl.addresses : 0}, позиций ${h.hl ? h.hl.positions : 0}${h.hl && Object.keys(h.hl.status || {}).length ? " · " + esc(Object.entries(h.hl.status).map(([k, v]) => `${k} ${v}`).join(" · ")) : ""}</p></div>
     <div class="card ${errs.length ? "bad" : ""}"><h4>Настройки модулей</h4><div class="big">${h.collect_only ? "только сбор" : "алерты вкл"}</div>
       <p>история норм: ${h.baseline_days.toFixed(1)} дн.<br><span class="muted">${esc(h.config.path)}</span>${errs.map((e) => `<br><span class="warn">${esc(e)}</span>`).join("")}</p></div>`;
   const rows = h.streams.filter((s) => A.healthAll || !["na", "noapi"].includes(s.status));
@@ -668,7 +677,7 @@ function renderHealth(h) {
       <td class="r">${lat}</td><td class="r">${s.jitter_ms != null ? s.jitter_ms + " мс" : "—"}</td>
       <td class="r">${s.last_msg_age != null ? ago(Date.now() / 1000 - s.last_msg_age) : "—"}</td>
       <td class="r">${s.reconnects || ""}</td><td class="r">${s.gaps || ""}</td><td class="r">${s.backfilled || ""}</td>
-      <td>${esc(s.book_status || "")}</td><td class="why">${esc(s.error || s.book_error || "")}</td></tr>`;
+      <td>${esc(s.book_status || "")}</td><td class="r">${qualityCell(s.quality)}</td><td class="why">${esc(s.error || s.book_error || "")}</td></tr>`;
   }).join("");
   const okc = (v) => (v === "ok" ? '<span class="pos">есть</span>' : esc(v || "—"));
   $("feedsBody").innerHTML = h.feeds.map((f) => {
@@ -692,6 +701,9 @@ const MODULE_FIELDS = [
   ["modules.orderbook", "М5 — стаканы: глубина, пустоты, айсберги"],
   ["modules.borrow", "М6 — займы для шортов"],
   ["modules.index", "М7 — составляющие индекса"],
+  ["modules.dex", "М8 — DEX: пулы, кто ведёт, арбитраж"],
+  ["modules.hyperliquid", "М9 — Hyperliquid: киты, ликвидации, TWAP"],
+  ["modules.quality", "М12 — качество площадок"],
   ["modules.journal", "М15 — журнал сигналов"],
   ["modules.recorder", "Запись сырых данных на диск"],
   ["alerts.telegram", "Алерты модулей в Telegram"],
@@ -728,5 +740,171 @@ window.saveModulesSettings = async function () {
   if (!Object.keys(body).length) return;
   A.modules = await api("/api/modules", { method: "PUT", body: JSON.stringify(body) });
 };
+
+// ---------- analysis sub-tabs ----------
+function setGroup(g) {
+  A.group = g;
+  store.set("analysisGroup", g);
+  document.querySelectorAll("#analysisTabs button").forEach((b) => b.classList.toggle("active", b.dataset.group === g));
+  document.querySelectorAll("#viewAnalysis section[data-group]").forEach((sec) => {
+    sec.hidden = sec.dataset.group !== "all" && sec.dataset.group !== g;
+  });
+  if (A.snap) renderAnalysis();
+}
+$("analysisTabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-group]");
+  if (b) setGroup(b.dataset.group);
+});
+setGroup(["flow", "book", "onchain", "quality"].includes(A.group) ? A.group : "flow");
+
+// ---------- М12 ----------
+function qualityOf(key) {
+  const q = A.snap && A.snap.quality;
+  const r = q && q.rows.find((x) => x.key === key);
+  return r ? r.score : null;
+}
+function renderQuality(q) {
+  if (!q) { $("qualityBody").innerHTML = '<tr><td colspan="8" class="empty">Модуль М12 выключен</td></tr>'; return; }
+  $("qualityHint").textContent = `порог исключения ${q.exclude_below}` + (q.computed ? ` · пересчёт ${fmtTime(q.computed)}` : " · первая оценка через ~30 минут торгов");
+  const part = (v) => (v == null ? '<span class="dim">—</span>' : `<span class="${v < 0.3 ? "q-bad" : v < 0.6 ? "warn" : ""}">${v.toFixed(2)}</span>`);
+  $("qualityBody").innerHTML = q.rows.map((r) => {
+    const [venue, kind] = splitKey(r.key);
+    const p = r.parts || {}, f = r.features || {};
+    const w = r.score == null ? 0 : Math.round(r.score * 100);
+    return `<tr><td class="venue">${esc(venue)}${kindBadge(kind)}${r.excluded ? ' <span class="q-bad" title="Не входит в суммы дельты и режима">исключена</span>' : ""}</td>
+      <td><span class="qbar"><i class="${r.excluded ? "bad" : "ok"}" style="width:${w}%"></i></span>${qualityCell(r.score)}${r.stored ? ' <span class="zb" title="Сохранённая оценка прошлого запуска, новая ещё считается">сохр.</span>' : ""}</td>
+      <td class="r" title="Δцены % на единицу нормированной дельты: ${f.impact != null ? f.impact.toFixed(3) : "—"}">${part(p.impact)}</td>
+      <td class="r" title="Объём в час / depth_1%: ${f.turnover != null ? f.turnover.toFixed(1) + "×" : "—"}">${part(p.turnover)}</td>
+      <td class="r" title="Доля сделок в зеркальных парах: ${f.mirror != null ? (f.mirror * 100).toFixed(1) + "%" : "—"}">${part(p.mirror)}</td>
+      <td class="r" title="Мелких сделок (до $100): ${f.small != null ? (f.small * 100).toFixed(0) + "%" : "—"}, 5 самых частых размеров: ${f.top5 != null ? (f.top5 * 100).toFixed(0) + "%" : "—"}">${part(p.sizes)}</td>
+      <td class="r" title="Корреляция дельты с ценой рынка: ${f.corr != null ? f.corr.toFixed(2) : "—"}">${part(p.link)}</td>
+      <td class="r">${f.minutes || ""}</td></tr>`;
+  }).join("") || '<tr><td colspan="8" class="empty">Оценки появятся через ~30 минут торгов по монете</td></tr>';
+}
+
+// ---------- М8 ----------
+const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "");
+function renderDex(d) {
+  if (!d) { $("dexCards").innerHTML = '<p class="muted">Модуль М8 выключен</p>'; $("dexDepth").innerHTML = ""; $("dexEvents").innerHTML = ""; return; }
+  const t = d.token;
+  const st = Object.entries(d.status || {}).filter(([, v]) => v !== "ok").map(([k, v]) => `${k}: ${v}`).join(" · ");
+  $("dexHint").textContent = t ? `${t.symbol} · ${t.chain} · ${shortAddr(t.address)} (${t.source === "config" ? "из настроек" : t.source})${d.rpc ? " · RPC: свапы в реальном времени" : ""}` : (st || "ищем токен на DEX…");
+  const lead = d.lead || {};
+  const ev = d.lead_events || [];
+  const dexLed = ev.filter((e) => e.leader === "DEX").length;
+  $("dexCards").innerHTML = `
+    <div class="card"><h4>Цена DEX</h4><div class="big">${d.price ? fmtPrice(d.price) : "—"}</div><p>к биржам ${fmtPct(d.premium_pct, 2)}</p></div>
+    <div class="card"><h4>Кто ведёт</h4><div class="big">${esc(lead.leader || "неясно")}</div>
+      <p>${lead.corr != null ? `сдвиг ${lead.lag > 0 ? "+" : ""}${lead.lag} с, корр. ${lead.corr.toFixed(2)}` : "копим 2+ минуты цен"}</p></div>
+    <div class="card"><h4>По движениям</h4><div class="big">${ev.length ? `DEX ${dexLed} / ${ev.length}` : "—"}</div><p>кто первым прошёл половину хода</p></div>
+    <div class="card"><h4>Пулы</h4><div class="big">${(d.pools || []).length}</div><p>${fmtUsd((d.pools || []).reduce((a, p) => a + (p.liquidity || 0), 0))} ликвидности</p></div>`;
+  const row = (name, dd, cls = "") => (dd ? `<tr class="${cls}"><td>${name}</td>${["1.0", "2.0", "5.0"].map((x) => `<td class="r">${fmtUsdOr((dd.up || {})[x])}</td>`).join("")}${["1.0", "2.0", "5.0"].map((x) => `<td class="r">${fmtUsdOr((dd.down || {})[x])}</td>`).join("")}</tr>` : "");
+  const ratio = {};
+  for (const side of ["up", "down"]) {
+    ratio[side] = {};
+    for (const x of ["1.0", "2.0", "5.0"]) {
+      const dv = ((d.dex_depth || {})[side] || {})[x], cv = (d.cex_depth[side] || {})[x];
+      ratio[side][x] = dv && cv ? cv / dv : null;
+    }
+  }
+  const ratioRow = `<tr><td class="muted">биржи дороже в</td>${["up", "down"].flatMap((sd) => ["1.0", "2.0", "5.0"].map((x) => {
+    const v = ratio[sd][x];
+    return `<td class="r ${v && v >= 3 ? "warn" : "muted"}">${v ? "×" + (v >= 100 ? v.toFixed(0) : v.toFixed(1)) : "—"}</td>`;
+  })).join("")}</tr>`;
+  $("dexDepth").innerHTML = (row(`DEX (${esc((d.depth || {}).source || "агрегатор")})`, d.depth, "agg") + row(`DEX: пул v3 (RPC, ${esc((d.v3 || {}).dex || "")})`, d.v3)
+    + row("Биржи (сводный стакан)", d.cex_depth) + ratioRow) || '<tr><td colspan="7" class="empty">Глубина пула замеряется раз в 3 минуты</td></tr>';
+  $("dexPoolsSummary").textContent = `Пулы (${(d.pools || []).length})`;
+  $("dexPools").innerHTML = (d.pools || []).map((p) => `<tr><td>${esc(p.dex || "")}${(p.labels || []).length ? ` <span class="zb">${esc(p.labels.join(","))}</span>` : ""}</td>
+    <td>${esc(t ? t.symbol : "")}/${esc(p.quote || "")}</td><td class="r">${fmtUsd(p.liquidity)}</td><td class="r">${p.price ? fmtPrice(p.price) : "—"}</td>
+    <td>${p.url ? `<a class="addr" href="${esc(p.url)}" target="_blank" rel="noopener">${shortAddr(p.address)}</a>` : esc(shortAddr(p.address))}</td></tr>`).join("");
+  // events: lead moves, whales, arbitrage, big swaps
+  const items = [];
+  for (const e of ev) {
+    items.push({ ts: e.ts, html: `<span class="t">${fmtTime(e.ts)}</span><b>Движение ${e.move_pct > 0 ? "+" : ""}${e.move_pct.toFixed(2)}%</b>`
+      + `<span>первыми: <b>${esc(e.leader)}</b>${e.by_sec != null ? ` на ${e.by_sec} с` : " (другая сторона не пошла)"}</span>` });
+  }
+  for (const w of d.whales || []) {
+    items.push({ ts: w.found, cls: "big", html: `<span class="t">${fmtTime(w.ts)}</span><b class="warn">Кит на DEX</b>`
+      + `<span class="${w.side === "buy" ? "pos" : "neg"}">${w.side === "buy" ? "покупка" : "продажа"} ${fmtUsd(w.usd)}</span>`
+      + `<span>за ним дельта бирж ${w.cex_delta > 0 ? "+" : "−"}${fmtUsd(Math.abs(w.cex_delta))}</span>${w.url ? ` <a class="addr" href="${esc(w.url)}" target="_blank" rel="noopener">tx</a>` : ""}` });
+  }
+  for (const s of d.swaps || []) {
+    const arb = s.arb ? ` <span class="warn" title="За ${esc(String(3))} с после свапа на биржах прошли сделки той же стороны на ${fmtUsd(s.arb.cex_usd)}: ${esc(s.arb.venues.join(", "))}">вероятный арбитраж → ${esc(s.arb.venues.slice(0, 3).join(", "))}</span>` : "";
+    items.push({ ts: s.ts, html: `<span class="t">${fmtTime(s.ts)}</span><span>${esc(s.venue)}</span>`
+      + `<span class="${s.side === "buy" ? "pos" : "neg"}">${s.side === "buy" ? "покупка" : "продажа"}</span><span class="num">${fmtUsd(s.usd)}</span>`
+      + (s.taker ? `<span class="muted num">${esc(shortAddr(s.taker))}</span>` : "")
+      + (s.url ? ` <a class="addr" href="${esc(s.url)}" target="_blank" rel="noopener">tx</a>` : "") + arb });
+  }
+  items.sort((a, b) => b.ts - a.ts);
+  $("dexEvHint").textContent = (d.swaps || []).length ? `крупных свапов: ${d.swaps.length}, арбитраж: ${(d.arb || []).length}` : "";
+  $("dexEvents").innerHTML = items.slice(0, 80).map((i) => `<li class="${i.cls || ""}">${i.html}</li>`).join("")
+    || '<li class="empty">Здесь появятся крупные свапы (больше p99 размера), отметки «вероятный арбитраж» и движения, где видно, кто шёл первым</li>';
+}
+
+// ---------- М9 ----------
+function renderHl(h) {
+  if (!h) { $("hlBody").innerHTML = '<tr><td colspan="11" class="empty">Модуль М9 выключен</td></tr>'; $("hlMap").innerHTML = ""; $("hlEvents").innerHTML = ""; $("hlTwaps").innerHTML = ""; return; }
+  const st = Object.entries(h.status || {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
+  $("hlHint").textContent = `${h.coin || "—"} · адресов в реестре ${h.registry} · ${st}`;
+  const usd = (v) => (v == null ? '<span class="dim">—</span>' : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : v < 0 ? "−" : ""}${fmtUsd(Math.abs(v))}</span>`);
+  $("hlBody").innerHTML = (h.whales || []).map((w) => {
+    const tw = (w.twaps || []).map((t) => `TWAP ${t.side === "buy" ? "покупка" : "продажа"} ${Math.round((t.progress || 0) * 100)}%`).join(", ");
+    const algo = w.algo && w.algo.regular ? `алгоритм, шаг ~${w.algo.step.toFixed(1)} с` : "";
+    return `<tr><td><a class="addr" href="${esc(w.url)}" target="_blank" rel="noopener" title="${esc(w.addr)}">${esc(w.label || shortAddr(w.addr))}</a></td>
+      <td class="${w.side === "long" ? "pos" : "neg"}">${w.side === "long" ? "лонг" : "шорт"}</td><td class="r">${fmtUsd(w.usd)}</td>
+      <td class="r">${w.entry ? fmtPrice(w.entry) : "—"}</td><td class="r">${w.liq ? fmtPrice(w.liq) : '<span class="dim" title="Ликвидации нет (мало плеча)">нет</span>'}</td>
+      <td class="r ${w.dist_pct != null && Math.abs(w.dist_pct) < 3 ? "warn" : ""}">${w.dist_pct != null ? fmtPct(w.dist_pct, 1) : "—"}</td>
+      <td class="r">${w.lev ? w.lev + "×" : "—"}</td><td class="r">${usd(w.chg_15m)}</td><td class="r">${usd(w.chg_1h)}</td>
+      <td class="r">${w.vol_1h ? fmtUsd(w.vol_1h) : ""}</td><td class="why">${esc([algo, tw].filter(Boolean).join(" · "))}</td></tr>`;
+  }).join("") || `<tr><td colspan="11" class="empty">${esc(st || "Ждём сделки Hyperliquid по монете: адреса берутся из ленты, позиции опрашиваются раз в 45 с")}</td></tr>`;
+  renderLiqMap(h);
+  $("hlTargets").innerHTML = (h.targets || []).map((t) => `<div>${t.side === "long" ? "Лонги" : "Шорты"}: кластер <b>${fmtUsd(t.usd)}</b> в ${t.dist_pct.toFixed(1)}% от цены
+    ${t.side === "long" ? "ниже" : "выше"}; дотащить цену: ${fmtUsdOr(t.cost)}${t.reach != null ? ` → кластер = <b class="${t.reach >= 0.5 ? "warn" : ""}">${t.reach.toFixed(2)}×</b> этой суммы` : ""}</div>`).join("")
+    || '<span class="muted">Крупных кластеров ликвидаций рядом с ценой нет</span>';
+  const twaps = (h.whales || []).flatMap((w) => (w.twaps || []).map((t) => ({ w, t })));
+  $("hlTwaps").innerHTML = twaps.map(({ w, t }) => {
+    const left = Math.max(0, t.minutes - (Date.now() / 1000 - t.start) / 60);
+    return `<div class="twap"><b>${esc(w.label || shortAddr(w.addr))}</b> · TWAP <span class="${t.side === "buy" ? "pos" : "neg"}">${t.side === "buy" ? "покупка" : "продажа"}</span>
+      ${fmtQty(t.sz)} монет за ${t.minutes} мин${t.randomize ? " (рандомизация)" : ""}: исполнено ${fmtQty(t.done)} (${Math.round((t.progress || 0) * 100)}%), осталось ~${Math.round(left)} мин
+      <div class="prog"><i style="width:${Math.round((t.progress || 0) * 100)}%"></i></div></div>`;
+  }).join("") || '<p class="muted small">Активных TWAP у отслеживаемых адресов нет</p>';
+  $("hlEvHint").textContent = (h.events || []).length ? `событий: ${h.events.length}` : "";
+  $("hlEvents").innerHTML = (h.events || []).map((e) => `<li><span class="t">${fmtTime(e.ts)}</span>
+    <a class="addr" href="https://app.hyperliquid.xyz/explorer/address/${esc(e.addr)}" target="_blank" rel="noopener">${esc(shortAddr(e.addr))}</a>
+    <span>${esc(e.kind)}</span><span class="${e.side === "long" ? "pos" : "neg"}">${e.side === "long" ? "лонг" : "шорт"}</span>
+    ${e.usd != null ? `<span class="num">${fmtUsd(e.usd)}</span>` : ""}${e.delta ? `<span class="muted num">(${e.delta > 0 ? "+" : "−"}${fmtUsd(Math.abs(e.delta))})</span>` : ""}</li>`).join("")
+    || '<li class="empty">Открытия, наборы, сокращения позиций и запуски TWAP появятся здесь</li>';
+}
+
+// Liquidation map: price levels on the vertical axis (shorts above the price, longs below), USD to the right.
+function renderLiqMap(h) {
+  const el = $("hlMap");
+  const m = h.liq_map;
+  if (!m || !h.price) { el.innerHTML = '<div class="empty muted">Нет позиций с ценой ликвидации</div>'; return; }
+  const n = Math.min(m.longs.length, Math.round(10 / m.bucket_pct));  // ±10 %
+  const longs = m.longs.slice(0, n), shorts = m.shorts.slice(0, n);
+  const max = Math.max(1, ...longs, ...shorts);
+  const W = Math.max(300, el.clientWidth - 16), rowH = 6, L = 78, R = W - 70, T = 8, mid = T + n * rowH, H = mid + n * rowH + 22;
+  const x = (v) => L + (v / max) * (R - L);
+  let g = `<line class="zero" x1="${L}" x2="${R}" y1="${mid}" y2="${mid}"/><text x="${L - 6}" y="${mid + 3}" text-anchor="end" class="lbl">цена ${fmtPrice(h.price)}</text>`;
+  const bar = (i, v, side) => {
+    const y = side === "short" ? mid - (i + 1) * rowH : mid + i * rowH;
+    const lo = (i * m.bucket_pct).toFixed(1), hi = ((i + 1) * m.bucket_pct).toFixed(1);
+    const pLo = h.price * (1 + (side === "short" ? +lo : -lo) / 100), pHi = h.price * (1 + (side === "short" ? +hi : -hi) / 100);
+    return `<g><title>${side === "short" ? "Шорты" : "Лонги"} ликвидируются ${side === "short" ? "выше" : "ниже"} на ${lo}–${hi}% (${fmtPrice(Math.min(pLo, pHi))}–${fmtPrice(Math.max(pLo, pHi))}): ${fmtUsd(v)}</title>`
+      + `<rect x="${L}" y="${y}" width="${R - L}" height="${rowH}" fill="transparent"/>`
+      + (v ? `<rect class="${side === "short" ? "lq-short" : "lq-long"}" x="${L}" y="${y + 0.5}" width="${Math.max(1.5, x(v) - L)}" height="${rowH - 1}" rx="1"/>` : "") + "</g>";
+  };
+  for (let i = 0; i < n; i++) g += bar(i, shorts[i], "short") + bar(i, longs[i], "long");
+  for (const pct of [2, 5, 10]) {
+    const k = pct / m.bucket_pct;
+    if (k > n) continue;
+    g += `<text x="${L - 6}" y="${mid - k * rowH + 3}" text-anchor="end">+${pct}%</text><text x="${L - 6}" y="${mid + k * rowH + 3}" text-anchor="end">−${pct}%</text>`;
+  }
+  for (const v of niceTicks(0, max, 3)) g += `<text x="${x(v)}" y="${H - 6}" text-anchor="middle">${fmtUsd(v)}</text>`;
+  g += `<text x="${R + 4}" y="${T + 9}" class="ptitle">шорты ↑</text><text x="${R + 4}" y="${H - 26}" class="ptitle">лонги ↓</text>`;
+  $("hlMapHint").textContent = `корзины по ${m.bucket_pct}% · ±10% от цены`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Карта ликвидаций известных позиций Hyperliquid">${g}</svg>`;
+}
 
 setView(A.view);

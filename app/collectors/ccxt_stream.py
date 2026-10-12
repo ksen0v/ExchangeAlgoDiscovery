@@ -149,9 +149,19 @@ class CcxtStream(Stream):
                     usd=quote_amt * fx,
                     side=side,
                     tid=str(t.get("id") or ""),
+                    taker=self._taker(t, side),
                 )
             )
         return out
+
+    def _taker(self, t: dict, side: str) -> str:
+        """Hyperliquid prints both addresses: users = [buyer, seller]; the aggressor is the buyer on "B"."""
+        if self.ex_id != "hyperliquid":
+            return ""
+        users = (t.get("info") or {}).get("users")
+        if isinstance(users, list) and len(users) == 2 and side in ("buy", "sell"):
+            return str(users[0] if side == "buy" else users[1]).lower()
+        return ""
 
     def convert_book(self, ob: dict) -> tuple[list, list]:
         fx = usd_rate(self.quote)

@@ -19,16 +19,23 @@ from app.analytics.book import BUCKET_PCT, BookAnalyzer
 from app.analytics.borrow import BorrowTracker
 from app.analytics.config import ModulesConfig, window_label
 from app.analytics.derivs import (CcxtDerivFeed, DemoDerivFeed, annual_pct, basis_pct, f8, premium_pct)
+from app.analytics.hyper import HyperTracker, liq_map
 from app.analytics.index import IndexTracker
+from app.analytics.leadlag import half_cross, xcorr_lead
+from app.analytics.onchain import DexTracker, explorer_tx
+from app.analytics.quality import VenueQuality
 from app.analytics.journal import Journal
 from app.analytics.recorder import Recorder
 from app.analytics.regime import RegimeTracker, classify, sign
 from app.analytics.signals import SPECS, SignalBoard
 from app.analytics.stats import pct_rank, z_of
 from app.analytics.store import AnalyticsStore, Baselines
+from app.config import VENUES
 from app.detector import fmt_usd
+from app.models import Trade
 
 log = logging.getLogger(__name__)
+DEX_VENUES = {v.name for v in VENUES if v.spot is not None and v.spot.id.startswith("dex_")}
 
 STEP = 5  # s: flow buckets, common grid of price / OI / depth
 KEEP = 3600 + 900  # s of 5-second history
@@ -110,6 +117,9 @@ class Analytics:
         self.book = BookAnalyzer(cfg)  # М5
         self.borrow = BorrowTracker(cfg, session, api_key, api_secret, clock, store, demo)  # М6
         self.index = IndexTracker(cfg, session, demo)  # М7
+        self.dex = DexTracker(cfg, session, demo)  # М8
+        self.hl = HyperTracker(cfg, session, demo)  # М9
+        self.quality = VenueQuality(cfg)  # М12
         self.cfg = cfg
         self.store = store
         self.recorder = recorder
@@ -143,6 +153,19 @@ class Analytics:
         self._grid_at = 0
         self._minute_at = 0
         self.snapshot: dict = {}
+        # М8: CEX prints for arbitrage / whale matching, by second: sec -> [[ts, key, side, usd, used], ...]
+        self.cex_secs: dict[int, list[list]] = defaultdict(list)
+        self.swaps: deque[dict] = deque(maxlen=300)
+        self.swap_sizes: deque[float] = deque(maxlen=5000)
+        self.arb_events: deque[dict] = deque(maxlen=200)
+        self.whale_pending: list[dict] = []
+        self.dex_whales: deque[dict] = deque(maxlen=50)
+        self.lead_cex: deque = deque()
+        self.lead_dex: deque = deque()
+        self.lead: dict = {}
+        self.lead_events: deque[dict] = deque(maxlen=50)
+        self._lead_at = 0.0
+        self._rpc_last = None
 
     def reset(self, coin: str) -> None:
         for f in self.feeds.values():
@@ -157,11 +180,27 @@ class Analytics:
         self.book.reset()
         self.borrow.reset(coin)
         self.index.reset(coin)
+        self.dex.reset(coin)
+        self.hl.reset(coin)
+        self.quality.reset()
         if self.store is not None:
             try:
-                asyncio.get_running_loop().create_task(self.borrow.load_history(coin))
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.borrow.load_history(coin))
+                loop.create_task(self._load_quality(coin))
             except RuntimeError:  # no loop (tests)
                 pass
+
+    async def _load_quality(self, coin: str) -> None:
+        """Last stored venue scores: an excluded venue stays excluded after a restart."""
+        try:
+            for metric in await self.store.metrics(coin):
+                if metric.startswith("quality:"):
+                    rows = await self.store.samples(coin, metric, time.time() - 2 * 86400)
+                    if rows and coin == self.coin:
+                        self.quality.loaded[metric.split(":", 1)[1]] = rows[-1][1]
+        except Exception as e:  # noqa: BLE001
+            log.info("stored venue quality not loaded: %s", e)
 
     def shutdown(self) -> None:
         for f in self.feeds.values():
@@ -178,7 +217,7 @@ class Analytics:
         key = stream.key
         self.kinds[key] = stream.kind
         b = self.flows[key]
-        w = self._weight(stream.venue)
+        w = self._wkey(key)
         for t in trades:
             if t.side not in ("buy", "sell"):
                 continue
@@ -196,6 +235,17 @@ class Analytics:
                 self.last[key] = (t.ts, t.price)
         if self.cfg.on("orderbook"):
             self.book.on_trades(key, trades)
+        if self.cfg.on("quality"):
+            self.quality.on_trades(key, trades)
+        if self.cfg.on("dex"):
+            if stream.venue in DEX_VENUES:
+                self._on_dex_swaps(stream, trades)
+            else:
+                for t in trades:
+                    if t.side in ("buy", "sell"):
+                        self.cex_secs[int(t.ts)].append([t.ts, key, t.side, t.usd, False])
+        if stream.venue == "Hyperliquid" and self.cfg.on("hyperliquid"):
+            self.hl.on_trades(trades)
 
     def on_book(self, stream, ts: float, bids: list, asks: list) -> None:
         d, mid = depth_1pct(bids, asks)
@@ -371,8 +421,9 @@ class Analytics:
         if minute_due:
             for k, v in self._metrics2(p2).items():
                 self.baselines.record(k, v, now)
+        p3 = self._phase3(now, consensus, streams, p2)
         regime = self._regime(now, delta, oi, liq) if cfg.on("regime") else None
-        alerts = self._signals(now, consensus, delta, oi, fund, liq, p2)
+        alerts = self._signals(now, consensus, delta, oi, fund, liq, p2, p3)
         low = self.baselines.low_history(now)
         self.snapshot = {
             "type": "analytics",
@@ -380,7 +431,8 @@ class Analytics:
             "ts": now,
             "price": consensus,
             "modules": {m: cfg.on(m) for m in ("delta", "open_interest", "regime", "funding", "liquidations",
-                                                 "orderbook", "borrow", "index", "journal", "recorder")},
+                                                 "orderbook", "borrow", "index", "dex", "hyperliquid", "quality",
+                                                 "journal", "recorder")},
             "collect_only": cfg.collect_only,
             "history_days": round(self.baselines.history_days(now), 2),
             "low_history": low,
@@ -395,6 +447,9 @@ class Analytics:
             "book": p2["book_public"],
             "borrow": p2["borrow"],
             "index": p2["index_public"],
+            "dex": p3["dex"],
+            "hl": p3["hl"],
+            "quality": p3["quality"],
             "signals": self.board.active(),
         }
         return self.snapshot, alerts
@@ -411,7 +466,7 @@ class Analytics:
                 buy, sell = self._window(b, now, w)
                 if buy + sell <= 0:
                     continue
-                wt = self._weight(key.split(":", 1)[0])
+                wt = self._wkey(key)
                 agg[kind][0] += buy * wt
                 agg[kind][1] += sell * wt
                 per.append({"key": key, "buy": round(buy), "sell": round(sell), "delta": round(buy - sell)})
@@ -680,7 +735,7 @@ class Analytics:
 
     # ---- signals -----------------------------------------------------------
     def _signals(self, now: float, price: float | None, delta: dict, oi: dict, fund: dict, liq: dict,
-                 p2: dict | None = None) -> list[dict]:
+                 p2: dict | None = None, p3: dict | None = None) -> list[dict]:
         cfg = self.cfg
         on_lvl = float(cfg.get("alerts.hysteresis_on"))
         off_lvl = float(cfg.get("alerts.hysteresis_off"))
@@ -703,6 +758,8 @@ class Analytics:
                 results += self._sig_borrow(delta, oi, fund, p2)
             if cfg.on("index"):
                 results += self._sig_index(p2)
+        if p3:
+            results += self._sig_phase3(now, p2 or {}, p3)
 
         seen = {(t, k) for t, k, _, _ in results}
         for (t, k), st in list(self.board.states.items()):
@@ -1105,6 +1162,300 @@ class Analytics:
                     "direction": (1 if (r.get("dev") or 0) > 0 else -1), "reasons": reasons}))
         return out
 
+    # ---- фаза 3: М8 DEX, М9 Hyperliquid, М12 качество -----------------------------------
+    def _wkey(self, key: str) -> float:
+        """Weight of a stream in the aggregates: the manual venue weight x its quality (М12)."""
+        w = self._weight(key.split(":", 1)[0])
+        if self.cfg.on("quality"):
+            w *= self.quality.weight(key)
+        return w
+
+    def _on_dex_swaps(self, stream, trades: list, network: str | None = None) -> None:
+        """DEX swaps: sandwich filter, large swaps, likely arbitrage on CEX, whales to check later."""
+        now = time.time()
+        cfg = self.cfg
+        if network is None:
+            network = (getattr(stream, "pool", None) or {}).get("network") or (self.dex.token or {}).get("chain")
+        sides: dict[tuple[str, int], set] = {}
+        for t in trades:
+            if t.taker and t.block:
+                sides.setdefault((t.taker, t.block), set()).add(t.side)
+        for s in self.swaps:  # the other leg may have come in an earlier batch
+            if s.get("taker") and s.get("block") and (s["taker"], s["block"]) in sides:
+                sides[(s["taker"], s["block"])].add(s["side"])
+        sizes = sorted(self.swap_sizes)
+        thr = max(1000.0, sizes[int(len(sizes) * 0.99) - 1]) if len(sizes) >= 50 else 10000.0
+        win = float(cfg.get("dex.arb_match_window_sec"))
+        for t in trades:
+            if t.usd <= 0 or t.side not in ("buy", "sell"):
+                continue
+            self.swap_sizes.append(t.usd)
+            sandwich = t.taker and t.block and sides.get((t.taker, t.block), set()) >= {"buy", "sell"}
+            if sandwich or t.usd < thr:
+                continue
+            swap = {"ts": t.ts, "venue": stream.venue if stream else "DEX (RPC)", "side": t.side, "usd": t.usd,
+                    "price": t.price, "taker": t.taker or None, "block": t.block or None, "tx": t.tid or None,
+                    "url": explorer_tx(network or "", t.tid) if t.tid else None}
+            # likely arbitrage: CEX prints of the same side within `win` s after the swap, of a comparable size
+            hits = [p for sec in range(int(t.ts), int(t.ts + win) + 1) for p in self.cex_secs.get(sec, ())
+                    if t.ts <= p[0] <= t.ts + win and p[2] == t.side and not p[4]]
+            cex_usd = sum(p[3] for p in hits)
+            if hits and 0.3 * t.usd <= cex_usd <= 3 * t.usd:
+                swap["arb"] = {"cex_usd": cex_usd, "venues": sorted({p[1].split(":", 1)[0] for p in hits})}
+                for p in hits:
+                    p[4] = True
+                    if cfg.get("dex.exclude_arb_from_delta"):
+                        cell = self.flows.get(p[1], {}).get(int(p[0]) // STEP)
+                        if cell:
+                            j = 0 if p[2] == "buy" else 1
+                            cell[j] = max(0.0, cell[j] - p[3])
+                self.arb_events.appendleft({**swap, "detected": now})
+            self.swaps.appendleft(swap)
+            self.whale_pending.append(swap)
+
+    def _check_whales(self, now: float) -> None:
+        follow = float(self.cfg.get("dex.whale_follow_sec"))
+        keep = []
+        for s in self.whale_pending:
+            if now < s["ts"] + follow + 2:
+                keep.append(s)
+                continue
+            def flow(t0: float, t1: float) -> float:
+                return sum((p[3] if p[2] == "buy" else -p[3])
+                           for sec in range(int(t0), int(t1) + 1) for p in self.cex_secs.get(sec, ()) if t0 <= p[0] <= t1)
+
+            after = flow(s["ts"], s["ts"] + follow)
+            before = flow(s["ts"] - follow, s["ts"])
+            same = after > 0 if s["side"] == "buy" else after < 0
+            # the CEX flow turned the swap's way: big enough and clearly stronger than before the swap
+            if same and abs(after) >= 0.5 * s["usd"] and abs(after) >= 2 * abs(before):
+                self.dex_whales.appendleft({**s, "cex_delta": after, "cex_before": before, "found": now})
+        self.whale_pending = keep
+
+    def _lead(self, now: float, consensus: float | None) -> None:
+        """1-second grids of the CEX consensus and the DEX price; xcorr every 10 s, move events."""
+        sec = int(now)
+        dex_px = None
+        while self.dex.rpc_swaps:  # level 2: exact swap prices from the node
+            s = self.dex.rpc_swaps.popleft()
+            if s.get("price"):
+                dex_px = s["price"]
+                self._rpc_last = (s["ts"], dex_px)
+            self._on_dex_swaps(None, [Trade(s["ts"], s["price"] or 0, s["coin"], s["usd"], s["side"],
+                                            tid=s.get("tx") or "", block=s.get("block") or 0)],
+                               network=(self.dex.token or {}).get("chain"))
+        if dex_px is None:
+            rl = getattr(self, "_rpc_last", None)
+            if rl and now - rl[0] < 30:
+                dex_px = rl[1]
+            elif self.dex.price and now - self.dex.price_ts < 15:
+                dex_px = self.dex.price
+        if not self.lead_cex or self.lead_cex[-1][0] != sec:
+            self.lead_cex.append((sec, consensus))
+            self.lead_dex.append((sec, dex_px))
+        window = float(self.cfg.get("dex.leadlag_window_min")) * 60
+        max_lag = int(self.cfg.get("dex.leadlag_max_lag_sec"))
+        while self.lead_cex and self.lead_cex[0][0] < sec - window - max_lag:
+            self.lead_cex.popleft()
+            self.lead_dex.popleft()
+        if now - self._lead_at >= 10 and len(self.lead_cex) >= 120:
+            self._lead_at = now
+            lag, corr = xcorr_lead([p for _, p in self.lead_dex], [p for _, p in self.lead_cex], max_lag)
+            self.lead = {"lag": lag, "corr": corr, "ts": now,
+                         "leader": None if corr is None or corr < 0.1 else
+                         ("DEX" if lag >= 2 else "биржи" if lag <= -2 else "одновременно")}
+        # event method: a move of move_pct % within move_max_sec on either side
+        move = float(self.cfg.get("leadership.move_pct"))
+        span = int(self.cfg.get("leadership.move_max_sec"))
+        if self.lead_events and now - self.lead_events[0]["ts"] < span:
+            return
+        cex = [(t, p) for t, p in self.lead_cex if t >= sec - span and p]
+        dex = [(t, p) for t, p in self.lead_dex if t >= sec - span and p]
+        if len(cex) < span // 2 or len(dex) < 3:
+            return
+        mv = {name: (ser[-1][1] / ser[0][1] - 1) * 100 for name, ser in (("биржи", cex), ("DEX", dex))}
+        name = max(mv, key=lambda k: abs(mv[k]))
+        if abs(mv[name]) < move:
+            return
+        other = "DEX" if name == "биржи" else "биржи"
+        if mv[other] * mv[name] <= 0 or abs(mv[other]) < move / 3:
+            # only one side moved: it led, the other has not followed (yet)
+            leader, tc, td, by = name, None, None, None
+        else:
+            tc = half_cross(cex, cex[0][1], cex[-1][1])
+            td = half_cross(dex, dex[0][1], dex[-1][1])
+            if tc is None or td is None:
+                return
+            leader = "DEX" if td < tc else "биржи" if tc < td else "одновременно"
+            by = abs(tc - td)
+        self.lead_events.appendleft({"ts": now, "dir": 1 if mv[name] > 0 else -1, "move_pct": mv[name],
+                                     "other_pct": mv[other], "cex_t": tc, "dex_t": td, "leader": leader,
+                                     "by_sec": by})
+
+    def _depth_from_profile(self, agg: dict | None, side: str, pct: float) -> float | None:
+        """Cost to move the aggregated book by pct % (bucket profile of М5)."""
+        if not agg:
+            return None
+        b = agg["ask_b" if side == "up" else "bid_b"]
+        n = min(len(b), max(1, int(round(pct / BUCKET_PCT))))
+        return sum(b[:n])
+
+    def _phase3(self, now: float, price: float | None, streams: dict, p2: dict) -> dict:
+        cfg = self.cfg
+        out: dict = {"dex": None, "hl": None, "quality": None}
+        agg = (p2.get("aggs") or {}).get("all")
+        if cfg.on("quality"):
+            if self.quality.due(now):
+                def depth_of(key: str) -> float | None:
+                    vals = [d for _, d in self.depth.get(key, ())]
+                    return median(vals) if vals else None
+                minutes = {}
+                for ts, p in self.price.points:
+                    minutes[int(ts) // 60] = p
+                for key, s in self.quality.compute(now, depth_of, minutes).items():
+                    if s["score"] is not None:
+                        self.baselines.record(f"quality:{key}", s["score"], now)
+            out["quality"] = self.quality.public()
+        if cfg.on("dex"):
+            self._lead(now, price)
+            self._check_whales(now)
+            for sec in [k for k in self.cex_secs if k < now - 240]:
+                del self.cex_secs[sec]
+            d = self.dex
+            dex_depth = d.depth or d.v3
+            cex = {s: {str(x): (agg["ask" if s == "up" else "bid"].get(x) if agg else None) for x in (1.0, 2.0, 5.0)}
+                   for s in ("up", "down")}
+            out["dex"] = {
+                "token": d.token, "pools": d.pools, "price": d.price, "price_ts": d.price_ts or None,
+                "premium_pct": (d.price / price - 1) * 100 if d.price and price else None,
+                "depth": d.depth, "v3": d.v3, "cex_depth": cex, "rpc": d.rpc_live, "status": dict(d.status),
+                "lead": self.lead, "lead_events": list(self.lead_events)[:10],
+                "swaps": list(self.swaps)[:60], "arb": list(self.arb_events)[:30], "whales": list(self.dex_whales)[:20],
+                "dex_depth": dex_depth,
+            }
+        if cfg.on("hyperliquid"):
+            hl = self.hl
+            s = streams.get("Hyperliquid:perp")
+            if s is not None and getattr(s, "market", None):
+                hl.set_market(s.market, getattr(s, "mult", 1.0))
+            elif self.demo and not hl.hl_coin:
+                hl.hl_coin, hl.mult = self.coin, 1.0
+            whales = hl.whales(now, price)
+            lmap = liq_map(hl.positions, price or 0, float(cfg.get("hyperliquid.liq_bucket_pct")))
+            reach = []
+            dist_max = float(cfg.get("hyperliquid.target_distance_pct"))
+            bucket = lmap["bucket_pct"]
+            for side, arr, book_side in (("long", lmap["longs"], "down"), ("short", lmap["shorts"], "up")):
+                n = int(dist_max / bucket)
+                if not any(arr[:n]):
+                    continue
+                i = max(range(n), key=lambda j: arr[j])
+                dist = (i + 0.5) * bucket
+                cost = self._depth_from_profile(agg, book_side, dist)
+                reach.append({"side": side, "usd": arr[i], "dist_pct": dist, "cost": cost,
+                              "reach": (arr[i] / cost) if cost else None})
+            biggest = max([r["usd"] for r in reach], default=0.0)
+            self.baselines.observe("hl_cluster", biggest, now)
+            out["hl"] = {"coin": hl.hl_coin, "whales": whales[:40], "liq_map": lmap, "targets": reach,
+                         "events": list(hl.events)[:60], "status": dict(hl.status),
+                         "registry": len(hl.registry), "price": price}
+        return out
+
+    def _sig_phase3(self, now: float, p2: dict, p3: dict) -> list:
+        cfg = self.cfg
+        out = []
+        dx = p3.get("dex")
+        if dx:
+            lead = dx.get("lead") or {}
+            evs = dx.get("lead_events") or []
+            dex_led = sum(1 for e in evs if e["leader"] == "DEX")
+            by_events = len(evs) >= 3 and dex_led / len(evs) >= 0.6
+            leads = lead.get("leader") == "DEX" or by_events
+            ratio = float(cfg.get("dex.cheap_move_ratio"))
+            dd = dx.get("dex_depth") or {}
+            parts = []
+            for side in ("up", "down"):
+                dv = (dd.get(side) or {}).get("5.0")
+                cv = (dx["cex_depth"].get(side) or {}).get("5.0")
+                if dv and cv:
+                    parts.append((cv / ratio) / dv)
+            cheap = max(parts) if parts else None
+            strength = _mins(1.0 if leads else 0.0, cheap) if cheap is not None else None
+            reasons = [
+                f"Кто ведёт: {lead.get('leader') or 'неясно'}"
+                + (f" (сдвиг {lead['lag']:+d} с, корреляция {lead['corr']:.2f})" if lead.get("corr") is not None else "")
+                + (f"; по движениям DEX первым в {dex_led} из {len(evs)}" if evs else ""),
+            ]
+            for side, word in (("up", "вверх"), ("down", "вниз")):
+                dv = (dd.get(side) or {}).get("5.0")
+                cv = (dx["cex_depth"].get(side) or {}).get("5.0")
+                if dv and cv:
+                    reasons.append(f"Сдвиг на 5% {word}: DEX {fmt_usd(dv)} против бирж {fmt_usd(cv)} (в {cv / dv:.0f} раз дешевле)")
+            reasons.append("Движение дешёвое: высокий риск отката")
+            out.append(("dex_leads_thin", "all", strength, {"reasons": reasons}))
+            for w in dx.get("whales") or []:
+                if now - w["found"] > 300:
+                    continue
+                key = w.get("tx") or f"{w['ts']:.0f}"
+                out.append(("dex_whale", f"dex|{key}", 1.0 + min(2.0, abs(w["cex_delta"]) / max(w["usd"], 1) - 0.5), {
+                    "venue": w["venue"], "kind": "spot", "title": f"Кит на DEX ({w['venue']})",
+                    "direction": 1 if w["side"] == "buy" else -1,
+                    "reasons": [f"Свап на {'покупку' if w['side'] == 'buy' else 'продажу'} {fmt_usd(w['usd'])}"
+                                + (f", кошелёк {w['taker'][:10]}…" if w.get("taker") else ""),
+                                f"За {cfg.get('dex.whale_follow_sec')} с после него дельта на биржах "
+                                f"{'+' if w['cex_delta'] >= 0 else '−'}{fmt_usd(abs(w['cex_delta']))} в ту же сторону "
+                                f"(до свапа {'+' if w['cex_before'] >= 0 else '−'}{fmt_usd(abs(w['cex_before']))})",
+                                *( [f"Транзакция: {w['url']}"] if w.get("url") else [])]}))
+        hl = p3.get("hl")
+        if hl:
+            add = float(cfg.get("hyperliquid.whale_add_usd"))
+            ranked = {w["addr"]: i for i, w in enumerate(hl["whales"])}
+            for w in hl["whales"]:
+                name = w.get("label") or (w["addr"][:8] + "…")
+                c15 = w.get("chg_15m")
+                grow = c15 is not None and ((w["side"] == "long" and c15 > 0) or (w["side"] == "short" and c15 < 0))
+                started_twap = any(now - t["start"] < 900 for t in w.get("twaps") or [])
+                strength = None
+                if c15 is not None and grow:
+                    strength = abs(c15) / add
+                if started_twap:
+                    strength = max(strength or 0.0, 1.0)
+                twap_txt = [f"Запустил TWAP: {'покупка' if t['side'] == 'buy' else 'продажа'} "
+                            f"{t['sz']:,.0f} монет за {t['minutes']:.0f} мин, исполнено {t['progress'] * 100:.0f}%"
+                            for t in w.get("twaps") or [] if t.get("progress") is not None]
+                out.append(("hl_whale_add", f"hl|{w['addr']}", strength, {
+                    "venue": "Hyperliquid", "kind": "perp", "title": f"Кит набирает: {name}",
+                    "direction": 1 if w["side"] == "long" else -1,
+                    "reasons": [f"{name} ({'лонг' if w['side'] == 'long' else 'шорт'} {fmt_usd(w['usd'])}, "
+                                f"плечо {w.get('lev') or '—'}): за 15 мин {'+' if (c15 or 0) >= 0 else '−'}"
+                                f"{fmt_usd(abs(c15 or 0))} (порог {fmt_usd(add)})", *twap_txt,
+                                f"Адрес: {w['url']}"]}))
+                shrink = c15 is not None and not grow and abs(c15) >= add / 2
+                big = ranked.get(w["addr"], 99) < 10 or w["usd"] >= 2 * add
+                out.append(("hl_whale_unload", f"hl|{w['addr']}", (abs(c15) / (add / 2)) if shrink and big else None, {
+                    "venue": "Hyperliquid", "kind": "perp", "title": f"Публичный кит разгружается: {name}",
+                    "direction": -1 if w["side"] == "long" else 1,
+                    "reasons": [f"{name} сократил {'лонг' if w['side'] == 'long' else 'шорт'} на {fmt_usd(abs(c15 or 0))} "
+                                f"за 15 мин, осталось {fmt_usd(w['usd'])}",
+                                "Вероятна разгрузка в тех, кто его копирует", f"Адрес: {w['url']}"]}))
+            st = self.baselines.stats("hl_cluster")
+            reach_min = float(cfg.get("hyperliquid.reach_min"))
+            total = {s: sum(w["usd"] for w in hl["whales"] if w["side"] == s) for s in ("long", "short")}
+            for t in hl["targets"]:
+                p95 = st["p95"] if st else None
+                big = (t["usd"] / p95) if p95 else (t["usd"] / (0.25 * total[t["side"]]) if total[t["side"]] else None)
+                rch = (t["reach"] / reach_min) if t.get("reach") is not None else None
+                word = "лонгов" if t["side"] == "long" else "шортов"
+                out.append(("hl_target", f"hl|{t['side']}", _mins(big, rch) if big is not None and rch is not None else None, {
+                    "venue": "Hyperliquid", "kind": "perp", "title": f"Мишень рядом: ликвидации {word}",
+                    "direction": -1 if t["side"] == "long" else 1,
+                    "reasons": [f"Кластер ликвидаций {word} {fmt_usd(t['usd'])} в {t['dist_pct']:.1f}% от цены"
+                                + (f" (p95 кластеров {fmt_usd(p95)})" if p95 else ""),
+                                f"Дотащить туда цену стоит {fmt_usd(t['cost'] or 0)} по сводному стакану: "
+                                f"кластер = {t['reach']:.1f}× этой суммы" if t.get("reach") is not None else "Глубина стакана: нет данных",
+                                "Крупные позиции становятся мишенью"]}))
+        return out
+
     # ---- background --------------------------------------------------------
     async def run(self) -> None:
         """Journal outcomes every 5 s, baseline samples every minute, statistics hourly."""
@@ -1131,5 +1482,8 @@ class Analytics:
                 "metrics": len(self.baselines.cache) or len(self.baselines.session_cache),
                 "borrow": {"key": self.borrow.key_state, "status": dict(self.borrow.status)},
                 "index": {"status": dict(self.index.status), "ids": dict(self.index.ids)},
-                "books": len(self.book.fresh(now))}
+                "books": len(self.book.fresh(now)),
+                "dex": {"status": dict(self.dex.status), "token": self.dex.token, "rpc": self.dex.rpc_live},
+                "hl": {"status": dict(self.hl.status), "addresses": len(self.hl.registry),
+                       "positions": len(self.hl.positions)}}
 

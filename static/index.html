@@ -55,6 +55,7 @@
             <th title="Серия одинаковых сделок в одну сторону">Алго</th>
             <th title="Крупная заявка у цены (плита): сторона, размер, расстояние до цены. ⇡N — переставляли за ценой, ↯N — сняли без исполнения за 2 мин, ММ — плотности маркетмейкера. Клик по ячейке — свои настройки плит для этой биржи">Плита</th>
             <th class="r" title="Доля в объёме всех бирж за окно">Доля</th>
+            <th class="r" title="Качество площадки (М12) 0–1: ниже порога она не входит в суммы дельты и режима. Подробно — «Анализ рынка» → «Качество площадок»">Кач.</th>
             <th class="r">Скор</th>
             <th title="Объём за 5 минут, 10-секундные бары: вверх покупки, вниз продажи">5 мин</th>
           </tr>
@@ -103,7 +104,13 @@
 
 <main class="view analysis" id="viewAnalysis" hidden>
   <div id="analysisNote" class="note" hidden></div>
-  <section class="panel a-regime">
+  <nav class="subtabs" id="analysisTabs" aria-label="Разделы анализа">
+    <button data-group="flow" title="М1–М4: режим, дельта спот/фьючерсы, открытый интерес, фандинг, базис, ликвидации">Поток и деривативы</button>
+    <button data-group="book" title="М5–М7: стаканы, займы для шортов, составляющие индекса">Стакан, займы, индекс</button>
+    <button data-group="onchain" title="М8–М9: DEX-пулы и кто ведёт, Hyperliquid: киты, позиции, ликвидации, TWAP">DEX и Hyperliquid</button>
+    <button data-group="quality" title="М12: качество площадок — фильтр нарисованного объёма">Качество площадок</button>
+  </nav>
+  <section class="panel a-regime" data-group="flow">
     <div class="panel-head"><h2>Режим рынка · М3</h2><span class="spacer"></span><span class="muted small" id="regimeHint"></span></div>
     <div class="pad">
       <div id="regimeCards" class="regime-cards"></div>
@@ -111,17 +118,17 @@
       <details class="small"><summary class="muted">Смены режима</summary><ol id="regimeHistory" class="plain-list"></ol></details>
     </div>
   </section>
-  <section class="panel a-signals">
+  <section class="panel a-signals" data-group="all">
     <div class="panel-head"><h2>Активные сигналы</h2><span class="spacer"></span><span class="muted small" id="signalsHint"></span></div>
     <ol id="signalsList" class="alerts-list"></ol>
   </section>
-  <section class="panel a-cvd">
+  <section class="panel a-cvd" data-group="flow">
     <div class="panel-head"><h2>CVD: спот и фьючерсы · М1</h2>
       <span class="legend"><i class="lg spot"></i>спот <i class="lg perp"></i>фьючерсы <i class="lg price"></i>цена</span>
       <span class="spacer"></span><span class="muted small">с момента выбора монеты, по минутам</span></div>
     <div id="cvdChart" class="chart"></div>
   </section>
-  <section class="panel a-delta">
+  <section class="panel a-delta" data-group="flow">
     <div class="panel-head"><h2>Дельта по окнам · М1</h2><span class="spacer"></span><span class="muted small" id="depthHint"></span></div>
     <div class="table-wrap"><table class="grid-table">
       <thead><tr>
@@ -137,17 +144,17 @@
       <tbody id="deltaBody"></tbody>
     </table></div>
   </section>
-  <section class="panel a-venues">
+  <section class="panel a-venues" data-group="flow">
     <div class="panel-head"><h2>Вклад бирж в дельту</h2><div id="venueWin" class="seg"></div><span class="spacer"></span><span class="muted small">клик по заголовку — сортировка</span></div>
     <div class="table-wrap"><table class="grid-table">
       <thead id="venueHead"><tr>
         <th data-sort="key">Биржа</th><th class="r" data-sort="buy">Покупки</th><th class="r" data-sort="sell">Продажи</th>
-        <th class="r" data-sort="delta">Дельта</th><th data-sort="abs">Вклад</th>
+        <th class="r" data-sort="delta">Дельта</th><th data-sort="abs">Вклад</th><th class="r" title="Качество площадки (М12)">Кач.</th>
       </tr></thead>
       <tbody id="venueBody"></tbody>
     </table></div>
   </section>
-  <section class="panel a-oi">
+  <section class="panel a-oi" data-group="flow">
     <div class="panel-head"><h2>Открытый интерес по биржам · М2</h2><span class="spacer"></span><span class="muted small" id="oiHint"></span></div>
     <div class="table-wrap"><table class="grid-table">
       <thead><tr>
@@ -161,7 +168,7 @@
       <tbody id="oiBody"></tbody>
     </table></div>
   </section>
-  <section class="panel a-funding">
+  <section class="panel a-funding" data-group="flow">
     <div class="panel-head"><h2>Фандинг, премия, базис · М4</h2><span class="spacer"></span><span class="muted small" id="fundHint"></span></div>
     <div class="table-wrap"><table class="grid-table heat">
       <thead><tr>
@@ -177,12 +184,12 @@
       <tbody id="fundBody"></tbody>
     </table></div>
   </section>
-  <section class="panel a-liq">
+  <section class="panel a-liq" data-group="flow">
     <div class="panel-head"><h2>Ликвидации · М4</h2><span class="spacer"></span><span class="muted small" id="liqHint"></span></div>
     <div id="liqChart" class="chart small-chart"></div>
     <ol id="liqFeed" class="alerts-list liq-feed"></ol>
   </section>
-  <section class="panel a-book">
+  <section class="panel a-book" data-group="book">
     <div class="panel-head"><h2>Стакан · М5</h2><span class="spacer"></span><span class="muted small" id="bookHint"></span></div>
     <div id="bookChart" class="chart"></div>
     <div class="table-wrap"><table class="grid-table">
@@ -201,7 +208,7 @@
         <tbody id="ctmVenues"></tbody></table>
     </details></div>
   </section>
-  <section class="panel a-bookev">
+  <section class="panel a-bookev" data-group="book">
     <div class="panel-head"><h2>События стакана · М5</h2><span class="spacer"></span><span class="muted small" id="bookEvHint"></span></div>
     <div class="pad small">
       <div id="defendedList"></div>
@@ -209,7 +216,7 @@
     </div>
     <ol id="bookEvents" class="alerts-list liq-feed"></ol>
   </section>
-  <section class="panel a-borrow">
+  <section class="panel a-borrow" data-group="book">
     <div class="panel-head"><h2>Займы для шортов · М6</h2><span class="spacer"></span><span class="muted small" id="borrowHint"></span></div>
     <div class="table-wrap"><table class="grid-table">
       <thead><tr>
@@ -226,7 +233,7 @@
       <tbody id="borrowBody"></tbody>
     </table></div>
   </section>
-  <section class="panel a-index">
+  <section class="panel a-index" data-group="book">
     <div class="panel-head"><h2>Составляющие индекса · М7</h2><div id="indexSrc" class="seg"></div><span class="spacer"></span><span class="muted small" id="indexHint"></span></div>
     <div class="index-grid">
       <div class="table-wrap"><table class="grid-table">
@@ -241,6 +248,64 @@
       </table></div>
       <div id="indexChart" class="chart small-chart"></div>
     </div>
+  </section>
+  <section class="panel a-dex" data-group="onchain">
+    <div class="panel-head"><h2>DEX · М8</h2><span class="spacer"></span><span class="muted small" id="dexHint"></span></div>
+    <div class="pad">
+      <div class="cards mini" id="dexCards"></div>
+    </div>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr>
+        <th title="Сколько $ нужно, чтобы сдвинуть цену на X%">Цена сдвига</th>
+        <th class="r">↑ 1%</th><th class="r">↑ 2%</th><th class="r">↑ 5%</th>
+        <th class="r">↓ 1%</th><th class="r">↓ 2%</th><th class="r">↓ 5%</th>
+      </tr></thead>
+      <tbody id="dexDepth"></tbody>
+    </table>
+    <details class="small pad"><summary class="muted" id="dexPoolsSummary">Пулы</summary>
+      <table class="grid-table"><thead><tr><th>DEX</th><th>Пара</th><th class="r">Ликвидность</th><th class="r">Цена</th><th>Адрес</th></tr></thead>
+        <tbody id="dexPools"></tbody></table>
+    </details></div>
+  </section>
+  <section class="panel a-dexev" data-group="onchain">
+    <div class="panel-head"><h2>Крупные свапы, арбитраж, кто ведёт · М8</h2><span class="spacer"></span><span class="muted small" id="dexEvHint"></span></div>
+    <ol id="dexEvents" class="alerts-list liq-feed"></ol>
+  </section>
+  <section class="panel a-hl" data-group="onchain">
+    <div class="panel-head"><h2>Hyperliquid: киты · М9</h2><span class="spacer"></span><span class="muted small" id="hlHint"></span></div>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr>
+        <th>Адрес</th><th>Сторона</th><th class="r">Размер</th><th class="r">Вход</th>
+        <th class="r" title="Цена ликвидации позиции">Ликвидация</th>
+        <th class="r" title="Сколько цене идти до ликвидации">До неё</th>
+        <th class="r">Плечо</th><th class="r" title="Изменение позиции за 15 минут, $">Δ 15м</th><th class="r">Δ 1ч</th>
+        <th class="r" title="Агрессивные сделки адреса за час">Сделки 1ч</th>
+        <th title="Регулярность сделок адреса (алгоритм) и активные TWAP">Алгоритм / TWAP</th>
+      </tr></thead>
+      <tbody id="hlBody"></tbody>
+    </table></div>
+  </section>
+  <section class="panel a-hlmap" data-group="onchain">
+    <div class="panel-head"><h2>Карта ликвидаций · М9</h2><span class="spacer"></span><span class="muted small" id="hlMapHint"></span></div>
+    <div id="hlMap" class="chart"></div>
+    <div class="pad small" id="hlTargets"></div>
+  </section>
+  <section class="panel a-hlev" data-group="onchain">
+    <div class="panel-head"><h2>События адресов и TWAP · М9</h2><span class="spacer"></span><span class="muted small" id="hlEvHint"></span></div>
+    <div class="pad" id="hlTwaps"></div>
+    <ol id="hlEvents" class="alerts-list liq-feed"></ol>
+  </section>
+  <section class="panel a-quality" data-group="quality">
+    <div class="panel-head"><h2>Качество площадок · М12</h2><span class="spacer"></span><span class="muted small" id="qualityHint"></span></div>
+    <p class="pad small muted">Оценка 0–1 за последние 24 часа. Ниже порога площадка не входит в суммы дельты и режима (её данные остаются видны).
+      Признаки: <b>влияние</b> — двигает ли её дельта цену так же, как на других биржах; <b>оборот</b> — объём к глубине стакана;
+      <b>зеркала</b> — покупка и продажа одного размера по одной цене за секунду; <b>размеры</b> — мало мелких сделок или одни и те же размеры;
+      <b>связь</b> — идёт ли её дельта вместе с ценой рынка.</p>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>Площадка</th><th>Оценка</th><th class="r">Влияние</th><th class="r">Оборот</th><th class="r">Зеркала</th>
+        <th class="r">Размеры</th><th class="r">Связь</th><th class="r" title="Минут с данными за 24 ч">Минут</th></tr></thead>
+      <tbody id="qualityBody"></tbody>
+    </table></div>
   </section>
 </main>
 
@@ -285,7 +350,7 @@
         <th class="r" title="Переподключений с запуска">Переподкл.</th>
         <th class="r" title="Обнаруженные пропуски: обрывы связи и скачки номеров сделок (Binance)">Пропуски</th>
         <th class="r" title="Сделок дозагружено через REST после обрывов">Дозагружено</th>
-        <th>Стакан</th><th>Ошибка</th></tr></thead>
+        <th>Стакан</th><th class="r" title="Качество площадки (М12)">Кач.</th><th>Ошибка</th></tr></thead>
       <tbody id="healthBody"></tbody>
     </table></div>
   </section>

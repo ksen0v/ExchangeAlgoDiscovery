@@ -423,3 +423,29 @@ th.sorted::after { content: " ▾"; }
 .defended b, .spoofs b { color: var(--text); }
 tr.agg td { font-weight: 700; }
 tr.low td.lowcell { color: var(--warn); font-weight: 700; }
+
+/* analysis sub-tabs */
+.subtabs { grid-column: 1 / -1; display: flex; gap: 4px; flex-wrap: wrap; }
+.subtabs button { background: var(--panel); color: var(--text-2); border: 1px solid var(--line); font-weight: 600; padding: 4px 12px; }
+.subtabs button.active { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+.a-dex { grid-column: span 7; }
+.a-dexev { grid-column: span 5; max-height: 520px; }
+.a-hl { grid-column: span 12; max-height: 460px; }
+.a-hlmap { grid-column: span 6; }
+.a-hlev { grid-column: span 6; max-height: 560px; }
+.a-quality { grid-column: span 12; }
+.cards.mini { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.cards.mini .card { padding: 6px 10px; background: var(--panel-2); }
+.cards.mini .card .big { font-size: 15px; }
+.qbar { display: inline-block; width: 60px; height: 8px; background: var(--panel-2); border-radius: 2px; vertical-align: middle; margin-right: 6px; position: relative; }
+.qbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--muted); }
+.qbar i.ok { background: var(--text-2); }
+.qbar i.bad { background: var(--warn); }
+.q-bad { color: var(--warn); font-weight: 700; }
+.twap { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin-bottom: 6px; background: var(--panel-2); font-size: 12px; }
+.twap .prog { height: 6px; background: var(--panel); border-radius: 3px; margin-top: 4px; position: relative; }
+.twap .prog i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--series-spot); border-radius: 3px; }
+a.addr { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--muted); font-family: var(--mono); }
+.chart .lq-long { fill: var(--sell); }
+.chart .lq-short { fill: var(--buy); }
+#viewAnalysis section[hidden] { display: none !important; }
