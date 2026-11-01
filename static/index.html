@@ -16,19 +16,17 @@
   </form>
   <nav class="views" role="tablist" aria-label="Экраны">
     <button class="view-btn" data-view="tape" title="Биржи, лента принтов, алерты, плиты">Лента</button>
-    <button class="view-btn" data-view="analysis" title="М1–М4: дельта спот/фьючерсы, открытый интерес, режим, фандинг, базис, ликвидации">Анализ рынка</button>
-    <button class="view-btn" data-view="journal" title="М15: все сигналы и что было с ценой дальше">Журнал сигналов</button>
-    <button class="view-btn" data-view="lab" title="Своя модель, обученная на записанной истории: закономерности и прогноз">Лаборатория</button>
-    <button class="view-btn" data-view="health" title="Связь с биржами, задержки, пропуски, часы, запись данных">Здоровье <span id="healthWarn" class="count"></span></button>
+    <button class="view-btn" data-view="analysis" title="Вклад бирж в дельту, CVD и открытый интерес">Анализ рынка</button>
+    <button class="view-btn" data-view="health" title="Связь с биржами и доступность открытого интереса">Подключения</button>
   </nav>
   <div class="meta">
     <span class="coin" id="coinLabel">—</span>
     <span class="muted">консенсус</span> <span id="consensus" class="num">—</span>
     <span class="muted">потоков</span> <span id="liveCount" class="num">—</span>
   </div>
-  <div id="regimeStrip" class="regime-strip" title="Режим рынка (М3) на окнах 1м / 5м / 15м. Клик — подробности"></div>
   <div class="actions">
     <button id="soundBtn" class="ghost" title="Звук алертов">🔔 Звук</button>
+    <button id="venuesBtn" class="ghost">Биржи монеты</button>
     <button id="settingsBtn" class="ghost">⚙ Настройки</button>
     <span id="conn" class="conn off" title="Связь с сервером">●</span>
   </div>
@@ -56,7 +54,6 @@
             <th title="Серия одинаковых сделок в одну сторону">Алго</th>
             <th title="Крупная заявка у цены (плита): сторона, размер, расстояние до цены. ⇡N — переставляли за ценой, ↯N — сняли без исполнения за 2 мин, ММ — плотности маркетмейкера. Клик по ячейке — свои настройки плит для этой биржи">Плита</th>
             <th class="r" title="Доля в объёме всех бирж за окно">Доля</th>
-            <th class="r" title="Качество площадки (М12) 0–1: ниже порога она не входит в суммы дельты и режима. Подробно — «Анализ рынка» → «Качество площадок»">Кач.</th>
             <th class="r">Скор</th>
             <th title="Объём за 5 минут, 10-секундные бары: вверх покупки, вниз продажи">5 мин</th>
           </tr>
@@ -104,59 +101,24 @@
 
 
 <main class="view analysis" id="viewAnalysis" hidden>
-  <div id="analysisNote" class="note" hidden></div>
-  <nav class="subtabs" id="analysisTabs" aria-label="Разделы анализа">
-    <button data-group="flow" title="М1–М4: режим, дельта спот/фьючерсы, открытый интерес, фандинг, базис, ликвидации">Поток и деривативы</button>
-    <button data-group="book" title="М5–М7: стаканы, займы для шортов, составляющие индекса">Стакан, займы, индекс</button>
-    <button data-group="onchain" title="М8–М9: DEX-пулы и кто ведёт, Hyperliquid: киты, позиции, ликвидации, TWAP">DEX и Hyperliquid</button>
-    <button data-group="quality" title="М12: качество площадок — фильтр нарисованного объёма">Качество площадок</button>
-  </nav>
-  <section class="panel a-regime" data-group="flow">
-    <div class="panel-head"><h2>Режим рынка · М3</h2><span class="spacer"></span><span class="muted small" id="regimeHint"></span></div>
-    <div class="pad">
-      <div id="regimeCards" class="regime-cards"></div>
-      <div id="regimeDiverge" class="diverge" hidden></div>
-      <details class="small"><summary class="muted">Смены режима</summary><ol id="regimeHistory" class="plain-list"></ol></details>
-    </div>
-  </section>
-  <section class="panel a-signals" data-group="all">
-    <div class="panel-head"><h2>Активные сигналы</h2><span class="spacer"></span><span class="muted small" id="signalsHint"></span></div>
-    <ol id="signalsList" class="alerts-list"></ol>
-  </section>
-  <section class="panel a-cvd" data-group="flow">
-    <div class="panel-head"><h2>CVD: спот и фьючерсы · М1</h2>
+  <section class="panel a-cvd">
+    <div class="panel-head"><h2>CVD: спот и фьючерсы</h2>
       <span class="legend"><i class="lg spot"></i>спот <i class="lg perp"></i>фьючерсы <i class="lg price"></i>цена</span>
       <span class="spacer"></span><span class="muted small">с момента выбора монеты, по минутам</span></div>
     <div id="cvdChart" class="chart"></div>
   </section>
-  <section class="panel a-delta" data-group="flow">
-    <div class="panel-head"><h2>Дельта по окнам · М1</h2><span class="spacer"></span><span class="muted small" id="depthHint"></span></div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr>
-        <th>Окно</th>
-        <th class="r" title="Агрессивные покупки минус продажи на всех спот-биржах, $">Дельта спот</th>
-        <th class="r" title="То же по всем фьючерсам, $">Дельта фьюч.</th>
-        <th class="r" title="Дельта спота / глубина стаканов спота в ±1% (depth_1%). В скобках — робастный z к норме">Норм. спот</th>
-        <th class="r" title="Дельта фьючерсов / depth_1% фьючерсов, в скобках z">Норм. фьюч.</th>
-        <th class="r" title="Норм. фьючерсы минус норм. спот: плюс — толкают фьючерсами">Расхождение</th>
-        <th class="r" title="Изменение консенсус-цены за окно">Δ цены</th>
-        <th class="r" title="Δ цены % / |норм. дельта|. Высокая — цена идёт легко (в стакане пусто). Низкая при большой дельте — кто-то поглощает поток">Эффективность</th>
-      </tr></thead>
-      <tbody id="deltaBody"></tbody>
-    </table></div>
-  </section>
-  <section class="panel a-venues" data-group="flow">
+  <section class="panel a-venues">
     <div class="panel-head"><h2>Вклад бирж в дельту</h2><div id="venueWin" class="seg"></div><span class="spacer"></span><span class="muted small">клик по заголовку — сортировка</span></div>
     <div class="table-wrap"><table class="grid-table">
       <thead id="venueHead"><tr>
         <th data-sort="key">Биржа</th><th class="r" data-sort="buy">Покупки</th><th class="r" data-sort="sell">Продажи</th>
-        <th class="r" data-sort="delta">Дельта</th><th data-sort="abs">Вклад</th><th class="r" title="Качество площадки (М12)">Кач.</th>
+        <th class="r" data-sort="delta">Дельта</th><th data-sort="abs">Вклад</th>
       </tr></thead>
       <tbody id="venueBody"></tbody>
     </table></div>
   </section>
-  <section class="panel a-oi" data-group="flow">
-    <div class="panel-head"><h2>Открытый интерес по биржам · М2</h2><span class="spacer"></span><span class="muted small" id="oiHint"></span></div>
+  <section class="panel a-oi">
+    <div class="panel-head"><h2>Открытый интерес по биржам</h2><span class="spacer"></span><span class="muted small" id="oiHint"></span></div>
     <div class="table-wrap"><table class="grid-table">
       <thead><tr>
         <th>Биржа</th>
@@ -164,219 +126,9 @@
         <th class="r">ОИ, $</th>
         <th class="r" title="Изменение ОИ в % от ОИ">Δ 1м</th><th class="r">Δ 5м</th><th class="r">Δ 15м</th><th class="r">Δ 1ч</th>
         <th title="Доля биржи в изменении ОИ за 5 минут: ΔОИ биржи / сумма |ΔОИ| всех бирж">Доля Δ5м</th>
-        <th class="r" title="Робастный z-score изменения ОИ за 5 минут к норме этой биржи. Больше 3 при спокойных остальных — «инициатор»">z 5м</th>
+        <th>Статус</th>
       </tr></thead>
       <tbody id="oiBody"></tbody>
-    </table></div>
-  </section>
-  <section class="panel a-funding" data-group="flow">
-    <div class="panel-head"><h2>Фандинг, премия, базис · М4</h2><span class="spacer"></span><span class="muted small" id="fundHint"></span></div>
-    <div class="table-wrap"><table class="grid-table heat">
-      <thead><tr>
-        <th>Биржа</th>
-        <th class="r" title="Ставка за один период">Ставка</th>
-        <th class="r" title="Как часто платится фандинг">Период</th>
-        <th class="r" title="Фандинг, приведённый к 8 часам: ставка × 8 / период">f8</th>
-        <th class="r" title="Годовых при текущей ставке">Годовых</th>
-        <th class="r" title="(mark − index) / index: насколько расчётная цена перпа выше индекса спота">Премия</th>
-        <th class="r" title="(цена перпа − цена спота) / цена спота на этой же бирже">Базис</th>
-        <th class="r">До выплаты</th>
-      </tr></thead>
-      <tbody id="fundBody"></tbody>
-    </table></div>
-  </section>
-  <section class="panel a-liq" data-group="flow">
-    <div class="panel-head"><h2>Ликвидации · М4</h2><span class="spacer"></span><span class="muted small" id="liqHint"></span></div>
-    <div id="liqChart" class="chart small-chart"></div>
-    <ol id="liqFeed" class="alerts-list liq-feed"></ol>
-  </section>
-  <section class="panel a-book" data-group="book">
-    <div class="panel-head"><h2>Стакан · М5</h2><span class="spacer"></span><span class="muted small" id="bookHint"></span></div>
-    <div id="bookChart" class="chart"></div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr>
-        <th title="Сводный стакан: стаканы всех бирж, сложенные относительно середины спреда каждой биржи">Рынок</th>
-        <th class="r" title="Сколько $ рыночными покупками нужно, чтобы сдвинуть цену вверх на 1% (сумма асков в пределах 1%)">↑ 1%</th>
-        <th class="r">↑ 2%</th><th class="r">↑ 5%</th>
-        <th class="r" title="Сколько $ рыночными продажами нужно, чтобы сдвинуть цену вниз на 1% (сумма бидов в пределах 1%)">↓ 1%</th>
-        <th class="r">↓ 2%</th><th class="r">↓ 5%</th>
-      </tr></thead>
-      <tbody id="ctmBody"></tbody>
-    </table>
-    <details class="small pad"><summary class="muted">По биржам</summary>
-      <table class="grid-table"><thead><tr><th>Биржа</th><th class="r">↑ 1%</th><th class="r">↑ 2%</th><th class="r">↓ 1%</th><th class="r">↓ 2%</th>
-        <th class="r" title="Спред, базисные пункты">Спред</th><th class="r" title="Как далеко от цены видно стакан биржи (вверх / вниз)">Видно стакан</th></tr></thead>
-        <tbody id="ctmVenues"></tbody></table>
-    </details></div>
-  </section>
-  <section class="panel a-bookev" data-group="book">
-    <div class="panel-head"><h2>События стакана · М5</h2><span class="spacer"></span><span class="muted small" id="bookEvHint"></span></div>
-    <div class="pad small">
-      <div id="defendedList"></div>
-      <div id="spoofList"></div>
-    </div>
-    <ol id="bookEvents" class="alerts-list liq-feed"></ol>
-  </section>
-  <section class="panel a-borrow" data-group="book">
-    <div class="panel-head"><h2>Займы для шортов · М6</h2><span class="spacer"></span><span class="muted small" id="borrowHint"></span></div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr>
-        <th>Где</th>
-        <th class="r" title="Сколько монеты можно занять (у биржи) или свободная ликвидность пула (DeFi)">Доступно</th>
-        <th class="r">Доступно, $</th>
-        <th class="r" title="Доступный объём в долях дневного объёма торгов (оценка по последнему часу)">Доля дн. объёма</th>
-        <th class="r">Δ 1ч</th><th class="r">Δ 4ч</th><th class="r">Δ 24ч</th>
-        <th class="r" title="Ставка займа, % годовых (часовая × 24 × 365)">Ставка</th>
-        <th class="r" title="Ставка / медиана за 30 дней. Больше 3 — «займ иссякает»">× к норме</th>
-        <th class="r" title="Утилизация пула: занято / всего (DeFi)">Утилизация</th>
-        <th>Заметки</th>
-      </tr></thead>
-      <tbody id="borrowBody"></tbody>
-    </table></div>
-  </section>
-  <section class="panel a-index" data-group="book">
-    <div class="panel-head"><h2>Составляющие индекса · М7</h2><div id="indexSrc" class="seg"></div><span class="spacer"></span><span class="muted small" id="indexHint"></span></div>
-    <div class="index-grid">
-      <div class="table-wrap"><table class="grid-table">
-        <thead><tr>
-          <th>Площадка</th><th class="r">Вес</th><th class="r">Цена</th>
-          <th class="r" title="Отклонение от взвешенной медианы остальных составляющих">Отклонение</th>
-          <th class="r" title="Сколько секунд подряд отклонение выше порога">Держится</th>
-          <th class="r" title="Глубина стакана площадки: сколько $ нужно, чтобы сдвинуть её цену на 1% (меньшее из вверх/вниз)">Глубина ±1%</th>
-          <th class="r" title="Вес × отклонение: насколько площадка тянет индекс, %">Влияние</th>
-        </tr></thead>
-        <tbody id="indexBody"></tbody>
-      </table></div>
-      <div id="indexChart" class="chart small-chart"></div>
-    </div>
-  </section>
-  <section class="panel a-dex" data-group="onchain">
-    <div class="panel-head"><h2>DEX · М8</h2><span class="spacer"></span><span class="muted small" id="dexHint"></span></div>
-    <div class="pad">
-      <div class="cards mini" id="dexCards"></div>
-    </div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr>
-        <th title="Сколько $ нужно, чтобы сдвинуть цену на X%">Цена сдвига</th>
-        <th class="r">↑ 1%</th><th class="r">↑ 2%</th><th class="r">↑ 5%</th>
-        <th class="r">↓ 1%</th><th class="r">↓ 2%</th><th class="r">↓ 5%</th>
-      </tr></thead>
-      <tbody id="dexDepth"></tbody>
-    </table>
-    <details class="small pad"><summary class="muted" id="dexPoolsSummary">Пулы</summary>
-      <table class="grid-table"><thead><tr><th>DEX</th><th>Пара</th><th class="r">Ликвидность</th><th class="r">Цена</th><th>Адрес</th></tr></thead>
-        <tbody id="dexPools"></tbody></table>
-    </details></div>
-  </section>
-  <section class="panel a-dexev" data-group="onchain">
-    <div class="panel-head"><h2>Крупные свапы, арбитраж, кто ведёт · М8</h2><span class="spacer"></span><span class="muted small" id="dexEvHint"></span></div>
-    <ol id="dexEvents" class="alerts-list liq-feed"></ol>
-  </section>
-  <section class="panel a-hl" data-group="onchain">
-    <div class="panel-head"><h2>Hyperliquid: киты · М9</h2><span class="spacer"></span><span class="muted small" id="hlHint"></span></div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr>
-        <th>Адрес</th><th>Сторона</th><th class="r">Размер</th><th class="r">Вход</th>
-        <th class="r" title="Цена ликвидации позиции">Ликвидация</th>
-        <th class="r" title="Сколько цене идти до ликвидации">До неё</th>
-        <th class="r">Плечо</th><th class="r" title="Изменение позиции за 15 минут, $">Δ 15м</th><th class="r">Δ 1ч</th>
-        <th class="r" title="Агрессивные сделки адреса за час">Сделки 1ч</th>
-        <th title="Регулярность сделок адреса (алгоритм) и активные TWAP">Алгоритм / TWAP</th>
-      </tr></thead>
-      <tbody id="hlBody"></tbody>
-    </table></div>
-  </section>
-  <section class="panel a-hlmap" data-group="onchain">
-    <div class="panel-head"><h2>Карта ликвидаций · М9</h2><span class="spacer"></span><span class="muted small" id="hlMapHint"></span></div>
-    <div id="hlMap" class="chart"></div>
-    <div class="pad small" id="hlTargets"></div>
-  </section>
-  <section class="panel a-hlev" data-group="onchain">
-    <div class="panel-head"><h2>События адресов и TWAP · М9</h2><span class="spacer"></span><span class="muted small" id="hlEvHint"></span></div>
-    <div class="pad" id="hlTwaps"></div>
-    <ol id="hlEvents" class="alerts-list liq-feed"></ol>
-  </section>
-  <section class="panel a-quality" data-group="quality">
-    <div class="panel-head"><h2>Качество площадок · М12</h2><span class="spacer"></span><span class="muted small" id="qualityHint"></span></div>
-    <p class="pad small muted">Оценка 0–1 за последние 24 часа. Ниже порога площадка не входит в суммы дельты и режима (её данные остаются видны).
-      Признаки: <b>влияние</b> — двигает ли её дельта цену так же, как на других биржах; <b>оборот</b> — объём к глубине стакана;
-      <b>зеркала</b> — покупка и продажа одного размера по одной цене за секунду; <b>размеры</b> — мало мелких сделок или одни и те же размеры;
-      <b>связь</b> — идёт ли её дельта вместе с ценой рынка.</p>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr><th>Площадка</th><th>Оценка</th><th class="r">Влияние</th><th class="r">Оборот</th><th class="r">Зеркала</th>
-        <th class="r">Размеры</th><th class="r">Связь</th><th class="r" title="Минут с данными за 24 ч">Минут</th></tr></thead>
-      <tbody id="qualityBody"></tbody>
-    </table></div>
-  </section>
-</main>
-
-<main class="view journal" id="viewJournal" hidden>
-  <section class="panel">
-    <div class="panel-head"><h2>Отчёт по сигналам · М15</h2>
-      <select id="jCoin" class="small" aria-label="Монета"><option value="cur">текущая монета</option><option value="">все монеты</option></select>
-      <select id="jDays" class="small" aria-label="Период"><option value="1">1 день</option><option value="7" selected>7 дней</option><option value="30">30 дней</option><option value="90">90 дней</option></select>
-      <span class="spacer"></span><span class="muted small">ход цены — в сторону сигнала; у сигналов без направления — просто изменение цены</span>
-    </div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr>
-        <th>Сигнал</th><th class="r">Срабатываний</th>
-        <th class="r" title="Средний ход цены через 1 минуту">1 мин</th><th class="r">5 мин</th><th class="r">15 мин</th><th class="r">60 мин</th>
-        <th class="r" title="Доля сигналов, после которых цена через 15 мин пошла в сторону сигнала (для сигналов без направления — сдвинулась больше 0.5%)">Отработало</th>
-        <th class="r" title="Средний максимальный ход в сторону сигнала за час">MFE</th>
-        <th class="r" title="Средний максимальный ход против сигнала за час">MAE</th>
-        <th title="Распределение хода через 15 мин: от «< −2%» до «> +2%»">Распределение 15 мин</th>
-      </tr></thead>
-      <tbody id="reportBody"></tbody>
-    </table></div>
-  </section>
-  <section class="panel">
-    <div class="panel-head"><h2>Журнал</h2><select id="jType" class="small" aria-label="Тип сигнала"><option value="">все сигналы</option></select><span class="spacer"></span><span class="muted small" id="jHint"></span></div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr><th>Время</th><th>Монета</th><th>Модуль</th><th>Сигнал</th><th class="r">Цена</th>
-        <th class="r">1 мин</th><th class="r">5 мин</th><th class="r">15 мин</th><th class="r">60 мин</th><th class="r">Макс ↑</th><th class="r">Макс ↓</th><th>Почему</th></tr></thead>
-      <tbody id="journalBody"></tbody>
-    </table></div>
-  </section>
-</main>
-
-<main class="view lab" id="viewLab" hidden>
-  <div class="cards" id="labCards"></div>
-  <section class="panel">
-    <div class="panel-head"><h2>Обучение</h2><span class="spacer"></span><span class="small muted" id="labStatus"></span></div>
-    <form class="lab-form" id="labForm">
-      <label>Движение цены от, %<input name="move_pct" type="number" step="any" min="0.05" max="50" required></label>
-      <label>за, минут<input name="horizon_min" type="number" step="1" min="1" max="1440" required></label>
-      <label>История, дней<input name="days" type="number" step="any" min="1" required></label>
-      <label>Учиться на<select name="scope"><option value="coin">этой монете</option><option value="all">всех монетах с историей</option></select></label>
-      <button type="submit" id="labTrain">Обучить</button>
-    </form>
-    <div class="lab-progress" id="labProgress" hidden><i></i></div>
-    <p class="pad small muted">Модель учится на минутных снимках всех модулей (дельта, ОИ, фандинг, стаканы, ликвидации, DEX, Hyperliquid, сигналы)
-      и отвечает на два вопроса: «вырастет ли цена на X% в ближайшие N минут» и «упадёт ли». Проверка честная: история делится на периоды,
-      модель учится на прошлом и оценивается только на следующем периоде, которого не видела. Сигналы «Лаборатория» включаются,
-      только если проверка пройдена. Модель переобучается сама раз в сутки — рынок меняется.</p>
-  </section>
-  <section class="panel">
-    <div class="panel-head"><h2>Прогноз сейчас</h2><span class="spacer"></span><span class="small muted" id="labLiveHint"></span></div>
-    <div id="labLive" class="lab-live"></div>
-  </section>
-  <section class="panel">
-    <div class="panel-head"><h2>Проверка на данных, которых модель не видела</h2></div>
-    <div id="labCheck" class="lab-check"></div>
-  </section>
-  <section class="panel">
-    <div class="panel-head"><h2>На что модель опирается</h2><span class="spacer"></span><span class="small muted">доля вклада показателя в решения модели</span></div>
-    <div id="labImportance" class="lab-imp"></div>
-  </section>
-  <section class="panel">
-    <div class="panel-head"><h2>Взаимосвязи в данных</h2><span class="spacer"></span><span class="small muted" id="labRelHint"></span></div>
-    <div class="table-wrap"><table class="grid-table">
-      <thead><tr><th>Что</th><th>Показатель</th><th>Когда он</th><th class="r" title="Сколько минут истории попало в эту группу">Минут</th>
-        <th class="r" title="Как часто после таких минут случалось движение">Случалось</th><th class="r" title="Как часто в среднем по всем минутам">Обычно</th>
-        <th class="r">Во сколько раз</th><th class="r" title="Средний ход цены через N минут после таких минут">Ход цены</th>
-        <th class="r" title="Надёжность: больше 3 — вряд ли случайность (с поправкой на то, что соседние минуты похожи)">z</th>
-        <th title="Держится ли в первых 3/4 истории и в последней 1/4 по отдельности">Устойчиво</th></tr></thead>
-      <tbody id="labRelations"></tbody>
     </table></div>
   </section>
 </main>
@@ -393,14 +145,14 @@
         <th class="r" title="Переподключений с запуска">Переподкл.</th>
         <th class="r" title="Обнаруженные пропуски: обрывы связи и скачки номеров сделок (Binance)">Пропуски</th>
         <th class="r" title="Сделок дозагружено через REST после обрывов">Дозагружено</th>
-        <th>Стакан</th><th class="r" title="Качество площадки (М12)">Кач.</th><th>Ошибка</th></tr></thead>
+        <th>Стакан</th><th>Ошибка</th></tr></thead>
       <tbody id="healthBody"></tbody>
     </table></div>
   </section>
   <section class="panel">
-    <div class="panel-head"><h2>Фьючерсные данные: ОИ, фандинг, ликвидации</h2></div>
+    <div class="panel-head"><h2>Открытый интерес</h2></div>
     <div class="table-wrap"><table class="grid-table">
-      <thead><tr><th>Биржа</th><th>Открытый интерес</th><th class="r">обновлён</th><th>Фандинг, mark/index</th><th class="r">обновлён</th><th>Ликвидации</th></tr></thead>
+      <thead><tr><th>Биржа</th><th>Открытый интерес</th><th class="r">обновлён</th></tr></thead>
       <tbody id="feedsBody"></tbody>
     </table></div>
   </section>
@@ -411,15 +163,25 @@
     <h3>Настройки детектора ленты</h3>
     <div class="grid" id="settingsGrid"></div>
     <p class="muted small" id="tgStatus"></p>
-    <h3>Модули анализа</h3>
-    <div class="grid" id="modulesGrid"></div>
-    <p class="muted small" id="modulesPath"></p>
     <div class="dlg-actions">
       <button type="button" id="tgTest" class="ghost">Тест Telegram</button>
       <span class="spacer"></span>
       <button value="cancel" class="ghost">Отмена</button>
       <button type="submit" id="saveSettings" value="save">Сохранить</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="venuesDlg">
+  <form id="venuesForm">
+    <h3>Какие биржи мониторить</h3>
+    <label>Монета <input id="venuesCoin" maxlength="20" list="venuesCoins" required autocomplete="off"></label>
+    <datalist id="venuesCoins"></datalist>
+    <p class="muted small">Выбор сохраняется отдельно для каждой монеты. Отключённые биржи не подключаются ни к ленте, ни к плитам, ни к открытому интересу.</p>
+    <label class="check"><input id="venuesAll" type="checkbox"> Все биржи (включая добавленные в будущем)</label>
+    <div class="venue-tools"><input id="venuesSearch" type="search" placeholder="Найти биржу" aria-label="Найти биржу"><button type="button" id="venuesNone" class="ghost small">Снять все</button><span id="venuesCount" class="muted small"></span></div>
+    <div id="venuesList" class="venue-grid"></div>
+    <div class="dlg-actions"><span class="spacer"></span><button type="button" id="venuesCancel" class="ghost">Отмена</button><button type="submit" id="venuesSave">Сохранить</button></div>
   </form>
 </dialog>
 
@@ -445,7 +207,6 @@
 
 <div id="toast" class="toast" hidden></div>
 <script src="/static/app.js"></script>
-<script src="/static/lab.js"></script>
 <script src="/static/analysis.js"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@ name: desktop
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:

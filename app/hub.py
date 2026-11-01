@@ -85,6 +85,11 @@ class Hub:
     def remove(self, c: Client) -> None:
         self.clients.discard(c)
 
+    def trade_floor(self, coin: str, key: str) -> float:
+        """Avoid allocating tape rows that no subscribed client will receive."""
+        return min((c.min_usd for c in self.clients if c.follows(coin, self.primary)
+                    and (c.keys is None or key in c.keys)), default=float("inf"))
+
     def broadcast(self, msg: dict) -> None:
         if self.clients:
             text = orjson.dumps(msg).decode()
@@ -126,13 +131,15 @@ class Hub:
 
     def push_trades(self, rows: list[dict]) -> None:
         if self.clients and len(self._tape) < MAX_TAPE_BUFFER:
-            self._tape.extend(rows)
+            self._tape.extend(rows[:MAX_TAPE_BUFFER - len(self._tape)])
 
     def push_walls(self, events: list[dict]) -> None:
         if self.clients and len(self._walls) < MAX_TAPE_BUFFER:
-            self._walls.extend(events)
+            self._walls.extend(events[:MAX_TAPE_BUFFER - len(self._walls)])
 
     def flush_tape(self) -> None:
+        if not self._tape and not self._walls:
+            return
         batch, self._tape = sorted(self._tape, key=lambda r: r["ts"]), []
         walls, self._walls = self._walls, []
         for c in list(self.clients):

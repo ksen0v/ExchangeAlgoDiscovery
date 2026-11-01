@@ -13,12 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
-from app.analytics.clock import Clock
-from app.analytics.config import ModulesConfig
 from app.analytics.engine import Analytics
-from app.analytics.journal import report as journal_report
-from app.analytics.recorder import Recorder
-from app.analytics.store import AnalyticsStore
 from app.collectors.base import http_session
 from app.config import VENUES, settings
 from app.detector import LIMITS, Detector, DetectorConfig
@@ -42,66 +37,29 @@ class State:
     hub: Hub
     manager: Manager
     telegram: Telegram
-    modules: ModulesConfig
-    astore: AnalyticsStore
     analytics: Analytics
-    recorder: Recorder
-    clock: Clock
 
 
 S = State()
 
 
-def _journal_entry(a: dict, collect_only: bool) -> dict:
-    """An alert (detector or module) as a journal row (М15)."""
-    if a.get("module"):
-        return {**a, "collect_only": collect_only,
-                "data": {**(a.get("data") or {}), "reasons": a.get("reasons"), "venue": a.get("venue")}}
-    bs = a.get("buy_share")
-    return {
-        "ts": a["ts"], "coin": a["coin"], "module": "Лента", "type": "tape_anomaly",
-        "title": "Аномалия в ленте", "key": a["key"], "price": a.get("price"), "score": a.get("score"),
-        "direction": 0 if bs is None else (1 if bs > 0.5 else -1), "low_history": False,
-        "collect_only": collect_only, "data": {"reasons": a.get("reasons"), "venue": a.get("venue")},
-    }
-
-
 async def _publish_alerts(alerts: list[dict], telegram_on: bool) -> None:
-    collect_only = S.modules.collect_only
     for a in alerts:
-        if S.modules.on("journal"):
-            await S.analytics.journal.add(_journal_entry(a, collect_only))
-        if collect_only:  # data collection only: no alerts, the journal still fills up
-            continue
         a["id"] = await S.storage.add_alert(a)
         S.hub.broadcast({"type": "alert", "alert": a})
         if telegram_on:
             S.telegram.send(format_alert(a, settings.timezone))
 
 
-def _regime_msg(snap: dict) -> dict | None:
-    reg = snap.get("regime")
-    if not reg:
-        return None
-    return {
-        "type": "regime",
-        "coin": snap["coin"],
-        "main": reg["main"],
-        "windows": [{k: w[k] for k in ("w", "label", "tone", "since")} for w in reg["windows"]],
-        "divergence": reg["divergence"],
-    }
-
-
 async def tick_loop() -> None:
-    last_regime = None
-    regime_at = 0.0
+    analytics_at = 0.0
     while True:
         started = time.monotonic()
         try:
             S.manager.sync_connected()
             metrics, alerts = S.detector.tick()
             empty = {"score": 0, "reasons": []}
-            rows = [{**info, **metrics.get(info["key"], empty), "quality": S.analytics.quality.score(info["key"])}
+            rows = [{**info, **metrics.get(info["key"], empty)}
                     for info in S.manager.infos()]
             now = time.time()
             S.hub.broadcast_snapshot(
@@ -116,31 +74,16 @@ async def tick_loop() -> None:
             )
             await _publish_alerts(alerts, S.detector.cfg.telegram)
 
-            snap, module_alerts = S.analytics.tick(now, S.detector.consensus, S.manager.streams)
-            S.hub.broadcast_main(snap, analytics_only=True)
-            regime = _regime_msg(snap)
-            key = regime and [(w["w"], w["label"]) for w in regime["windows"]]
-            if regime and (key != last_regime or now - regime_at >= 5):
-                last_regime, regime_at = key, now
-                S.hub.broadcast_main(regime)
-            await _publish_alerts(module_alerts, S.detector.cfg.telegram and bool(S.modules.get("alerts.telegram")))
+            S.analytics.tick(now, S.detector.consensus, S.manager.streams)
+            if now - analytics_at >= 2 and any(c.analytics and c.follows(S.manager.coin, S.hub.primary)
+                                              for c in S.hub.clients):
+                analytics_at = now
+                S.hub.broadcast_main(S.analytics.snapshot(now, S.manager.streams), analytics_only=True)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let the loop die
             log.exception("tick failed")
         await asyncio.sleep(max(0.05, 1.0 - (time.monotonic() - started)))
-
-
-async def config_watch_loop() -> None:
-    """radar.yaml is re-read a couple of seconds after it is saved (ТЗ 3.6)."""
-    while True:
-        await asyncio.sleep(2)
-        try:
-            if S.modules.reload_if_changed():
-                S.analytics.baselines.days = tuple(S.modules.get("baseline_days"))
-                S.analytics.baselines.min_samples = int(S.modules.get("min_baseline_samples"))
-        except Exception:  # noqa: BLE001
-            log.exception("modules config reload failed")
 
 
 async def maintenance_loop() -> None:
@@ -170,36 +113,19 @@ async def lifespan(_: FastAPI):
     S.hub = Hub()
     S.telegram = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
     session = http_session()
-    S.modules = ModulesConfig(settings.modules_config)
-    S.modules.load()
-    # demo data never mixes with real history
-    suffix = "-demo" if settings.demo else ""
-    S.astore = AnalyticsStore(str(settings.data_dir / f"analytics{suffix}.db"))
-    await S.astore.open()
-    S.recorder = Recorder(S.modules, settings.data_dir / f"raw{suffix}")
-    S.clock = Clock()
-    S.analytics = Analytics(S.modules, S.astore, S.recorder, demo=settings.demo, session=session,
-                            api_key=settings.binance_api_key, api_secret=settings.binance_api_secret,
-                            clock=S.clock, lab_dir=settings.data_dir / f"lab{suffix}")
-    S.manager = Manager(S.detector, S.hub, session, analytics=S.analytics, recorder=S.recorder)
+    S.analytics = Analytics(demo=settings.demo)
+    selection = await S.storage.get("venue_selection", {})
+    S.manager = Manager(S.detector, S.hub, session, analytics=S.analytics,
+                        venue_selection=selection if isinstance(selection, dict) else {})
 
     tasks = [
         asyncio.create_task(S.hub.run_tape()),
         asyncio.create_task(S.telegram.run()),
         asyncio.create_task(tick_loop()),
         asyncio.create_task(maintenance_loop()),
-        asyncio.create_task(config_watch_loop()),
-        asyncio.create_task(S.recorder.run()),
-        asyncio.create_task(S.analytics.run()),
-        asyncio.create_task(S.analytics.borrow.run()),
-        asyncio.create_task(S.analytics.index.run()),
-        asyncio.create_task(S.analytics.dex.run()),
-        asyncio.create_task(S.analytics.hl.run()),
-        asyncio.create_task(S.analytics.lab.run()),
     ]
     if not settings.demo:
         tasks.append(asyncio.create_task(run_fx_updater()))
-        tasks.append(asyncio.create_task(S.clock.run(session)))
     await S.manager.set_coin(await S.storage.get("coin", settings.default_coin))
     watch = await S.storage.get("watch", [])
     await S.manager.set_watch(watch if isinstance(watch, list) else [])
@@ -209,12 +135,9 @@ async def lifespan(_: FastAPI):
         for t in tasks:
             t.cancel()
         await S.manager.shutdown()
-        with contextlib.suppress(Exception):
-            await S.recorder.flush()
-            await S.analytics.baselines.flush()
+        await asyncio.gather(*tasks, return_exceptions=True)
         with contextlib.suppress(Exception):
             await session.close()
-        await S.astore.close()
         await S.storage.close()
 
 
@@ -272,6 +195,7 @@ async def get_state() -> dict:
         "demo": settings.demo,
         "watch": list(S.manager.watch),
         "max_watch": MAX_WATCH,
+        "venue_selection": S.manager.venue_selection,
         "venues": [
             {"name": v.name, "spot": bool(v.spot), "perp": bool(v.perp), "custom": any(
                 s is not None and s.kind == "custom" for s in (v.spot, v.perp)
@@ -388,89 +312,40 @@ async def get_walls(limit: int = 100) -> list[dict]:
 @app.get("/api/analytics")
 async def get_analytics() -> dict:
     """The latest module snapshot of the main coin (the same as the "analytics" WebSocket message)."""
-    return S.analytics.snapshot or {"type": "analytics", "coin": S.manager.coin}
+    return S.analytics.snapshot(time.time(), S.manager.streams)
 
 
 @app.get("/api/health")
 async def get_health() -> dict:
-    """Connections (ТЗ 3.5), feeds of OI / funding / liquidations, clock, raw data recorder, config."""
     now = time.time()
-    return {
-        "ts": now,
-        "coin": S.manager.coin,
-        "streams": [{**h, "quality": S.analytics.quality.score(h["key"])} for h in S.manager.health(now)],
-        **S.analytics.health(S.manager.streams, now),
-        "clock": S.clock.status(),
-        "recorder": S.recorder.status(),
-        "config": {"path": str(S.modules.path), "errors": S.modules.errors},
-        "collect_only": S.modules.collect_only,
-        "demo": settings.demo,
-    }
+    return {"ts": now, "coin": S.manager.coin, "demo": settings.demo,
+            "streams": S.manager.health(now), "feeds": S.analytics.feed_status(S.manager.streams, now)}
 
 
-@app.get("/api/modules")
-async def get_modules() -> dict:
-    return S.modules.public()
+class VenuesIn(BaseModel):
+    coin: str
+    venues: list[str] | None = None  # null = every venue, [] = no connections
 
 
-@app.put("/api/modules")
-async def put_modules(body: dict) -> dict:
-    """{"modules.delta": false, "collect_only": true, ...}: saved to radar.yaml."""
-    try:
-        S.modules.update(body)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    return S.modules.public()
+@app.get("/api/venues")
+async def get_venues(coin: str | None = None) -> dict:
+    coin = (coin or S.manager.coin).strip().upper()
+    return {"coin": coin, "venues": S.manager.venue_selection.get(coin)}
 
 
-@app.get("/api/journal")
-async def get_journal(coin: str | None = None, days: float = 7, type: str | None = None, limit: int = 300) -> list:
-    since = time.time() - max(0.0, days) * 86400
-    return await S.astore.signals(coin.upper() if coin else None, since, max(1, min(limit, 2000)), type)
-
-
-@app.get("/api/journal/report")
-async def get_journal_report(coin: str | None = None, days: float = 30) -> dict:
-    """М15: per signal type - count, average move after 1/5/15/60 min, share that worked, MFE/MAE."""
-    since = time.time() - max(0.0, days) * 86400
-    rows = await S.astore.signals(coin.upper() if coin else None, since, 100_000)
-    return {**journal_report(rows), "days": days, "coin": coin.upper() if coin else None}
-
-
-class LabTrainIn(BaseModel):
-    horizon_min: int | None = None
-    move_pct: float | None = None
-    scope: str | None = None  # "coin" | "all"
-    days: float | None = None
-
-
-@app.get("/api/lab")
-async def get_lab() -> dict:
-    """Laboratory: how much history there is, training status, the model's check report, live forecast."""
-    lab = S.analytics.lab
-    return {
-        "coin": S.manager.coin,
-        "enabled": S.modules.on("lab"),
-        "status": lab.status,
-        "coverage": await lab.coverage(S.manager.coin),
-        "model": lab.summary(),
-        "live": lab.live,
-        "settings": {k: S.modules.get(f"lab.{k}") for k in ("horizon_min", "move_pct", "train_days", "min_days",
-                                                             "scope", "auto_retrain_hours", "alerts")},
-        "demo": settings.demo,
-    }
-
-
-@app.post("/api/lab/train")
-async def post_lab_train(body: LabTrainIn) -> dict:
-    """Start training on the recorded history of the main coin (in the background)."""
-    try:
-        S.analytics.lab.start(body.horizon_min, body.move_pct, body.scope, body.days)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(409, str(e)) from e
-    return {"ok": True, "status": S.analytics.lab.status}
+@app.put("/api/venues")
+async def put_venues(body: VenuesIn) -> dict:
+    coin = body.coin.strip().upper()
+    if not coin.isascii() or not coin.isalnum() or len(coin) > 20:
+        raise HTTPException(400, "Неверный тикер монеты")
+    known = {v.name for v in VENUES}
+    if body.venues is not None and set(body.venues) - known:
+        raise HTTPException(400, "Неизвестная биржа")
+    await S.manager.set_venues(coin, body.venues)
+    await S.storage.set("venue_selection", S.manager.venue_selection)
+    msg = {"coin": coin, "venues": S.manager.venue_selection.get(coin)}
+    S.hub.broadcast({"type": "venues", **msg})
+    return msg
 
 
 @app.post("/api/telegram/test")

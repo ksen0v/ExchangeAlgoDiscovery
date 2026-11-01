@@ -117,28 +117,6 @@ def test_wall_override_per_venue_and_coin(client):
     assert "WEEX:perp" not in r.json()["overrides"]
 
 
-def test_module_endpoints(client):
-    import time as _t
-
-    deadline = _t.time() + 15
-    snap = {}
-    while _t.time() < deadline:
-        snap = client.get("/api/analytics").json()
-        if snap.get("delta") and snap.get("regime"):
-            break
-        _t.sleep(0.5)
-    assert snap["coin"] == "DEMOX" and snap["delta"]["windows"] and len(snap["regime"]["windows"]) == 3
-    h = client.get("/api/health").json()
-    assert h["streams"] and {"latency_ms", "reconnects", "gaps"} <= set(h["streams"][0]) and "clock" in h
-    r = client.put("/api/modules", json={"modules.delta": False})
-    assert r.status_code == 200 and r.json()["data"]["modules"]["delta"] is False
-    assert client.put("/api/modules", json={"alert_z": "abc"}).status_code == 400
-    assert client.put("/api/modules", json={"nope": 1}).status_code == 400
-    rep = client.get("/api/journal/report?days=1").json()
-    assert rep["total"] >= 0 and isinstance(rep["types"], list)
-    assert isinstance(client.get("/api/journal?days=1").json(), list)
-
-
 def test_ws_analytics_only_on_request(client):
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "filter", "analytics": True})
@@ -151,19 +129,52 @@ def test_ws_analytics_only_on_request(client):
             raise AssertionError("no analytics snapshot")
 
 
-def test_lab_endpoints(client):
-    import time as _t
+def test_minimal_analytics_endpoints(client):
+    snap = client.get("/api/analytics").json()
+    assert snap["coin"] == "DEMOX" and set(snap) == {"type", "coin", "ts", "delta", "cvd", "oi"}
+    assert [w["w"] for w in snap["delta"]["windows"]] == ["1m", "5m", "15m", "1h"]
+    assert "streams" in client.get("/api/health").json()
+    for path in ("/api/journal", "/api/lab", "/api/modules"):
+        assert client.get(path).status_code == 404
 
-    d = client.get("/api/lab").json()
-    assert d["coin"] == "DEMOX" and d["enabled"] and d["model"] is None and d["live"] is None
-    assert {"lab_days", "metric_days", "raw_days", "coins"} <= set(d["coverage"])
-    assert d["settings"]["horizon_min"] == 15 and d["settings"]["move_pct"] == 1.0
-    assert client.post("/api/lab/train", json={"horizon_min": 0}).status_code == 400
-    r = client.post("/api/lab/train", json={"horizon_min": 15, "move_pct": 1})
-    assert r.status_code == 200
-    deadline = _t.time() + 15
-    while _t.time() < deadline and client.get("/api/lab").json()["status"]["state"] == "running":
-        _t.sleep(0.2)
-    st = client.get("/api/lab").json()["status"]
-    assert st["state"] == "error" and "мало истории" in st["error"]  # a fresh demo has no history yet
-    assert client.get("/api/health").json()["lab"]["state"] == "error"
+
+def test_venue_selection_is_per_coin_and_persisted(client):
+    original = main.S.manager.streams["Binance:spot"]
+    r = client.put("/api/venues", json={"coin": "DEMOX", "venues": ["Binance"]})
+    assert r.status_code == 200 and r.json()["venues"] == ["Binance"]
+    assert main.S.manager.streams["Binance:spot"] is original
+    assert set(main.S.manager.streams) == {"Binance:spot", "Binance:perp"}
+    assert client.get("/api/venues?coin=OTHER").json()["venues"] is None
+    client.post("/api/coin", json={"coin": "OTHER"})
+    client.post("/api/coin", json={"coin": "DEMOX"})
+    assert set(main.S.manager.streams) == {"Binance:spot", "Binance:perp"}
+    import asyncio
+    from app.storage import Storage
+
+    async def saved():
+        db = Storage(settings.db_path)
+        await db.open()
+        try:
+            return await db.get("venue_selection")
+        finally:
+            await db.close()
+    assert asyncio.run(saved())["DEMOX"] == ["Binance"]
+
+
+def test_empty_venue_selection_and_watch_coin(client):
+    client.put("/api/watch", json={"coins": ["PEPE"]})
+    assert client.put("/api/venues", json={"coin": "PEPE", "venues": []}).status_code == 200
+    assert not main.S.manager.watch["PEPE"].streams
+    assert main.S.manager.streams
+    client.put("/api/venues", json={"coin": "DEMOX", "venues": []})
+    assert not main.S.manager.streams
+    assert not client.get("/api/analytics").json()["oi"]["venues"]
+    client.put("/api/venues", json={"coin": "DEMOX", "venues": None})
+    assert main.S.manager.streams
+    assert client.get("/api/venues?coin=DEMOX").json()["venues"] is None
+
+
+def test_invalid_venues_do_not_change_selection(client):
+    assert client.put("/api/venues", json={"coin": "DEMOX", "venues": ["Unknown"]}).status_code == 400
+    assert client.put("/api/venues", json={"coin": "BAD-COIN", "venues": []}).status_code == 400
+    assert client.get("/api/venues?coin=DEMOX").json()["venues"] is None
