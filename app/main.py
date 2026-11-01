@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
-from app.analytics.engine import Analytics
+from app.analytics.engine import OI_CHART_WINDOWS, Analytics
 from app.collectors.base import http_session
 from app.config import VENUES, settings
 from app.detector import LIMITS, Detector, DetectorConfig
@@ -320,6 +320,20 @@ async def get_health() -> dict:
     now = time.time()
     return {"ts": now, "coin": S.manager.coin, "demo": settings.demo,
             "streams": S.manager.health(now), "feeds": S.analytics.feed_status(S.manager.streams, now)}
+
+
+@app.get("/api/oi/history")
+async def get_oi_history(key: str, coin: str, seconds: int = 3600) -> dict:
+    if coin.strip().upper() != S.manager.coin:
+        raise HTTPException(409, "Основная монета изменилась")
+    stream = S.manager.streams.get(key)
+    if stream is None or stream.kind != "perp":
+        raise HTTPException(404, "Фьючерсная биржа не включена для этой монеты")
+    if seconds not in OI_CHART_WINDOWS:
+        raise HTTPException(400, "Период графика: 15 минут, 1 час, 4 часа или 24 часа")
+    series = S.analytics.oi_series(key, time.time(), seconds)
+    series["stale"] = series["stale"] or stream.status not in ("live", "polling")
+    return series
 
 
 class VenuesIn(BaseModel):

@@ -11,8 +11,8 @@ TOKENS = {"code": "000000", "success": True, "data": [
     {"symbol": "OTHER", "alphaId": "ALPHA_1"},
 ]}
 TRADES = {"code": "000000", "success": True, "data": [
-    {"a": 7, "p": "48.0", "q": "10", "T": 1_800_000_000_000, "m": True},
-    {"a": 8, "p": "48.1", "q": "2", "T": 1_800_000_000_500, "m": False},
+    {"a": 7, "p": "48.0", "q": "10", "T": 1_800_000_000_000, "m": False, "side": "SELL"},
+    {"a": 8, "p": "48.1", "q": "2", "T": 1_800_000_000_500, "m": True, "side": "BUY"},
     {"a": 9, "p": "0", "q": "2", "T": 1_800_000_000_600, "m": False},
 ]}
 
@@ -52,8 +52,8 @@ def test_error_payload_raises():
 
 def test_taker_side_from_any_field_format():
     ts = ba.taker_side
-    assert ts({"m": True}) == "sell" and ts({"m": False}) == "buy"
-    assert ts({"m": "true"}) == "sell" and ts({"m": "false"}) == "buy"
+    assert ts({"m": True}) is None and ts({"m": False}) is None
+    assert ts({"m": "true"}) is None and ts({"m": "false"}) is None
     assert ts({"isBuyerMaker": 1}) == "sell" and ts({"isBuyerMaker": 0}) == "buy"
     assert ts({"side": "SELL"}) == "sell" and ts({"S": "Buy"}) == "buy"
     assert ts({"isBuy": False}) == "sell"
@@ -74,5 +74,49 @@ def test_tick_rule_when_feed_has_no_side(fake_api, monkeypatch):
     monkeypatch.setattr(ba, "get_json", get_json)
     s = ba.BinanceAlphaStream("Binance Alpha", "spot", "KOGE", lambda *a: None, session=None)
     asyncio.run(s.resolve())
-    sides = [t.side for _, t in asyncio.run(s.fetch_trades())]
+    got = []
+    s.on_trades = lambda stream, trades, live: got.extend(trades)
+    s.emit_seed([t for _, t in asyncio.run(s.fetch_trades())])
+    sides = [t.side for t in got]
     assert sides[1:] == ["buy", "sell", "sell"]
+
+
+def test_deprecated_false_flag_with_overlapping_pages(monkeypatch):
+    first = [{"a": i, "T": i * 1000, "p": str(p), "q": "1", "m": False}
+             for i, p in ((1, 10), (2, 11), (3, 9))]
+    new = {"a": 4, "T": 4000, "p": "8", "q": "1", "m": False}
+    batches = [first, [*first, new]]
+
+    async def get_json(*args, **kwargs):
+        return {"code": "000000", "data": batches.pop(0)}
+
+    monkeypatch.setattr(ba, "get_json", get_json)
+    got = []
+    s = ba.BinanceAlphaStream("Binance Alpha", "spot", "X", lambda st, ts, live: got.extend((t, live) for t in ts), None)
+
+    async def run():
+        seen = set()
+        for batch in range(2):
+            rows = await s.fetch_trades()
+            fresh = [t for key, t in rows if key not in seen]
+            seen.update(key for key, _ in rows)
+            (s.emit_seed if batch == 0 else s.emit)(fresh)
+    asyncio.run(run())
+    assert [t.side for t, _ in got] == ["?", "buy", "sell", "sell"]
+    assert [live for _, live in got] == [False, False, False, True]
+    assert all(t.inferred for t, _ in got[1:])
+
+
+def test_alpha_keeps_distinct_aggregate_ids_in_same_millisecond(monkeypatch):
+    async def get_json(*args, **kwargs):
+        return {"code": "000000", "data": [
+            {"a": 0, "T": 1000, "p": "10", "q": "1", "side": "BUY"},
+            {"a": 1, "T": 1000, "p": "10", "q": "2", "side": "BUY"},
+        ]}
+    monkeypatch.setattr(ba, "get_json", get_json)
+    got = []
+    s = ba.BinanceAlphaStream("Binance Alpha", "spot", "X", lambda st, ts, live: got.extend(ts), None)
+    rows = asyncio.run(s.fetch_trades())
+    s.emit_seed([t for _, t in rows])
+    assert rows[0][0] == 0 and len(got) == 2
+    assert [t.tid for t in got] == ["0", "1"]

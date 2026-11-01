@@ -1,7 +1,10 @@
 "use strict";
 // Only visible screens are rendered; hidden windows request lightweight snapshots.
 const A = { view: store.get("view", "tape"), snap: null,
-  venueWin: store.get("venueWin", "5m"), venueSort: store.get("venueSort", "abs"), healthTimer: null };
+  venueWin: store.get("venueWin", "5m"), venueSort: store.get("venueSort", "abs"), healthTimer: null,
+  oiKey: store.get("oiKey", "Binance:perp"), oiUnit: store.get("oiUnit", "coins"),
+  oiSeconds: store.get("oiSeconds", 3600), oiTimer: null, oiAbort: null, oiHistory: null,
+  oiOptions: "", oiRequestedCoin: null };
 window.A = A;
 const WIN_RU = { "1m": "1м", "5m": "5м", "15m": "15м", "1h": "1ч", "30s": "30с" };
 const winRu = (w) => WIN_RU[w] || w;
@@ -27,10 +30,14 @@ function setView(view) {
   document.querySelectorAll(".view-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === A.view));
   sendFilter();
   clearInterval(A.healthTimer);
+  clearInterval(A.oiTimer);
+  if (document.hidden || A.view !== "analysis") A.oiAbort?.abort();
   if (document.hidden) return;
   if (A.view === "analysis") {
     if (A.snap) renderAnalysis();
     api("/api/analytics").then(onAnalytics).catch((e) => toast(e.message));
+    loadOiHistory();
+    A.oiTimer = setInterval(loadOiHistory, 10000);
   } else if (A.view === "health") {
     loadHealth();
     A.healthTimer = setInterval(loadHealth, 5000);
@@ -172,7 +179,8 @@ function renderOi(oi) {
   const row = (r, total) => {
     const [venue, kind] = total ? ["Все биржи", ""] : splitKey(r.key);
     const share = r.share && r.share["5m"];
-    return `<tr class="${total ? "total" : ""}"><td class="venue">${esc(venue)}${kind ? kindBadge(kind) : ""}</td>
+    const venueCell = total ? esc(venue) : `<button type="button" class="ghost small oi-open" data-oi-key="${esc(r.key)}" title="Показать график ОИ">${esc(venue)}${kindBadge(kind)}</button>`;
+    return `<tr class="${total ? "total" : ""}"><td class="venue">${venueCell}</td>
       <td class="r">${fmtCoins(r.coins)}</td><td class="r">${r.usd ? fmtUsd(r.usd) : '<span class="dim">—</span>'}</td>
       ${["1m", "5m", "15m", "1h"].map((w) => `<td class="r">${fmtPct((r.pct || {})[w])}</td>`).join("")}
       <td>${total ? "" : dbar(share, 1)} ${share != null ? `<span class="zb">${(share * 100).toFixed(0)}%</span>` : ""}</td>
@@ -182,8 +190,127 @@ function renderOi(oi) {
   $("oiBody").innerHTML = oi.venues.length
     ? oi.venues.map((r) => row(r, false)).join("") + row({ ...t, usd: totalUsd }, true)
     : '<tr><td colspan="9" class="empty">Ждём данные ОИ: опрос раз в 5–10 с. Биржи без публичного ОИ — на экране «Подключения»</td></tr>';
+  syncOiSelector(oi.venues);
 }
 
+function syncOiSelector(rows) {
+  const keys = rows.map((r) => r.key).sort();
+  const signature = JSON.stringify(keys);
+  if (A.oiOptions !== signature) {
+    A.oiOptions = signature;
+    $("oiVenue").innerHTML = keys.map((key) => `<option value="${esc(key)}">${esc(splitKey(key)[0])}</option>`).join("");
+  }
+  const previous = A.oiKey;
+  if (!keys.includes(A.oiKey)) A.oiKey = rows.find((r) => r.coins != null)?.key || keys[0] || "";
+  $("oiVenue").value = A.oiKey;
+  if (previous !== A.oiKey || A.oiRequestedCoin !== S.coin) {
+    A.oiHistory = null;
+    renderOiChart();
+    loadOiHistory();
+  }
+}
+
+function resetOiChart() {
+  A.oiAbort?.abort();
+  A.oiHistory = null;
+  A.oiRequestedCoin = null;
+  renderOiChart();
+}
+window.resetOiChart = resetOiChart;
+
+async function loadOiHistory() {
+  if (document.hidden || A.view !== "analysis" || !A.oiKey || A.snap?.coin !== S.coin) return;
+  A.oiAbort?.abort();
+  const controller = new AbortController();
+  A.oiAbort = controller;
+  const coin = S.coin, key = A.oiKey, seconds = A.oiSeconds;
+  A.oiRequestedCoin = coin;
+  try {
+    const data = await api(`/api/oi/history?coin=${encodeURIComponent(coin)}&key=${encodeURIComponent(key)}&seconds=${seconds}`, { signal: controller.signal });
+    if (controller.signal.aborted || data.coin !== S.coin || data.key !== A.oiKey || data.seconds !== A.oiSeconds) return;
+    A.oiHistory = data;
+    renderOiChart();
+  } catch (err) {
+    if (controller.signal.aborted) return;
+    $("oiChartHint").textContent = err.message;
+  }
+}
+
+function renderOiChart() {
+  const el = $("oiChart"), data = A.oiHistory;
+  $("oiUnit").value = A.oiUnit;
+  document.querySelectorAll("#oiRange button").forEach((b) => b.classList.toggle("active", Number(b.dataset.seconds) === A.oiSeconds));
+  if (!data || data.coin !== S.coin || data.key !== A.oiKey) {
+    $("oiChartHint").textContent = A.oiKey ? `${splitKey(A.oiKey)[0]} · ${S.coin}` : "Выбери фьючерсную биржу";
+    el.innerHTML = '<div class="empty muted">Ждём данные открытого интереса</div>';
+    return;
+  }
+  const idx = A.oiUnit === "usd" ? 2 : 1;
+  const points = data.points.filter((p) => p[idx] != null && Number.isFinite(p[idx]));
+  if (!points.length) {
+    $("oiChartHint").textContent = `${splitKey(A.oiKey)[0]} · ${S.coin}`;
+    el.innerHTML = '<div class="empty muted">Биржа пока не передала данные для этого графика</div>';
+    return;
+  }
+  const format = (v) => A.oiUnit === "usd" ? fmtUsd(v) : fmtQty(v);
+  const first = points[0], last = points[points.length - 1];
+  const change = first[idx] ? (last[idx] / first[idx] - 1) * 100 : null;
+  const stamp = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  $("oiChartHint").textContent = `${splitKey(A.oiKey)[0]} · ${S.coin} · ${format(last[idx])}`
+    + (change == null ? "" : ` · ${change > 0 ? "+" : ""}${change.toFixed(2)}% с ${stamp(first[0])}`)
+    + (data.stale ? " · данные устарели" : "")
+    + ` · последнее обновление ${stamp(data.last_ts || last[0])}`;
+  const W = Math.max(320, el.clientWidth - 16), H = 260, L = 76, R = W - 18, T = 12, B = H - 30;
+  const end = data.ts, span = Math.min(data.seconds, Math.max(60, end - first[0]));
+  const start = end - span;
+  const xs = (t) => L + (t - start) / span * (R - L);
+  const values = points.map((p) => p[idx]);
+  let lo = Math.min(...values), hi = Math.max(...values);
+  const pad = Math.max((hi - lo) * 0.08, Math.abs(hi) * 0.001, 1e-8);
+  lo = Math.max(0, lo - pad); hi += pad;
+  const ys = (v) => B - (v - lo) / (hi - lo) * (B - T);
+  let grid = "";
+  for (const value of niceTicks(lo, hi)) grid += `<line class="grid" x1="${L}" x2="${R}" y1="${ys(value)}" y2="${ys(value)}"/><text x="${L - 6}" y="${ys(value) + 3}" text-anchor="end">${format(value)}</text>`;
+  for (let i = 0; i <= 4; i++) {
+    const t = start + span * i / 4;
+    grid += `<text x="${xs(t)}" y="${H - 8}" text-anchor="middle">${hhmm(t)}</text>`;
+  }
+  const path = points.map((p, i) => {
+    const move = !i || p[0] - points[i - 1][0] > data.max_gap_sec;
+    return `${move ? "M" : "L"}${xs(p[0]).toFixed(1)},${ys(p[idx]).toFixed(1)}`;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="График открытого интереса ${esc(splitKey(A.oiKey)[0])}">${grid}<path d="${path}" class="s-oi"/><circle cx="${xs(last[0])}" cy="${ys(last[idx])}" r="3" class="oi-dot"/><line class="cross" x1="0" x2="0" y1="${T}" y2="${B}" opacity="0"/></svg><div class="tip" hidden></div>`;
+  attachHover(el, el.querySelector("svg"), xs, points, (p) => `<b>${stamp(p[0])}</b><br>ОИ ${format(p[idx])}${A.oiUnit === "coins" ? " монет" : ""}`, {L, R});
+}
+
+function selectOiVenue(key) {
+  A.oiKey = key;
+  store.set("oiKey", key);
+  $("oiVenue").value = key;
+  A.oiHistory = null;
+  renderOiChart();
+  loadOiHistory();
+}
+$("oiVenue").addEventListener("change", () => selectOiVenue($("oiVenue").value));
+$("oiBody").addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-oi-key]");
+  if (button) {
+    selectOiVenue(button.dataset.oiKey);
+    $("oiChart").scrollIntoView({block: "nearest"});
+  }
+});
+$("oiUnit").addEventListener("change", () => { A.oiUnit = $("oiUnit").value; store.set("oiUnit", A.oiUnit); renderOiChart(); });
+$("oiRange").addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-seconds]");
+  if (!button) return;
+  A.oiSeconds = Number(button.dataset.seconds);
+  store.set("oiSeconds", A.oiSeconds);
+  A.oiHistory = null;
+  renderOiChart();
+  loadOiHistory();
+});
+if (![900, 3600, 14400, 86400].includes(A.oiSeconds)) A.oiSeconds = 3600;
+if (!["coins", "usd"].includes(A.oiUnit)) A.oiUnit = "coins";
 
 async function loadHealth() {
   try {

@@ -173,7 +173,7 @@ function renderStreams() {
     const wall = wallCell(s);
     const stale = s.age != null && s.age > 60 ? ` <span class="dim" title="Последняя сделка ${Math.round(s.age)}с назад">·</span>` : "";
     let html = `<tr class="${cls}" data-key="${esc(s.key)}">
-      <td class="venue">${esc(venue)}${kindBadge(s.kind)}</td>
+      <td class="venue">${esc(venue)}${kindBadge(s.kind)}${s.side_source === "price_tick_fallback" ? ' <span class="muted" title="Сторона Alpha оценивается по изменению цены, если API не передаёт её явно">≈</span>' : ""}</td>
       <td class="r">${fmtPrice(s.price)}${stale}</td>
       <td class="r">${fmtBps(s.ret_bps)}</td>
       <td class="r">${fmtBps(s.dev_bps)}</td>
@@ -261,7 +261,7 @@ function tapeRowHtml(r) {
     + `<span class="ven">${esc(venue)}${kindBadge(kind)}</span>`
     + `<span class="r">${fmtPrice(r.price)}</span>`
     + `<span class="r">${fmtQty(r.amount)}${fills}</span>`
-    + `<span class="r usd">${fmtUsd(r.usd)}</span>`
+    + `<span class="r usd"${r.inferred ? ' title="Сторона оценена по изменению цены, а не передана биржей"' : ""}>${r.inferred ? "≈" : ""}${fmtUsd(r.usd)}</span>`
     + `<span class="r">${rep}</span></div>`;
 }
 
@@ -423,6 +423,7 @@ function setCoin(coin) {
   document.title = `${coin} · Manipulation Radar`;
   S.tape = [];
   if (window.A) window.A.snap = null;
+  if (window.resetOiChart) window.resetOiChart();
   S.selected.clear();
   store.set("selected", []);
   renderChips();

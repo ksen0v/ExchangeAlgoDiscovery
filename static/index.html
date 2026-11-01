@@ -131,6 +131,22 @@
       <tbody id="oiBody"></tbody>
     </table></div>
   </section>
+  <section class="panel a-oi-chart">
+    <div class="panel-head oi-chart-head">
+      <h2>График открытого интереса</h2>
+      <select id="oiVenue" aria-label="Биржа для графика открытого интереса"></select>
+      <select id="oiUnit" aria-label="Единицы открытого интереса">
+        <option value="coins">В монетах</option><option value="usd">В долларах</option>
+      </select>
+      <div class="seg" id="oiRange" aria-label="Период графика">
+        <button type="button" data-seconds="900">15м</button><button type="button" data-seconds="3600">1ч</button>
+        <button type="button" data-seconds="14400">4ч</button><button type="button" data-seconds="86400">24ч</button>
+      </div>
+    </div>
+    <p id="oiChartHint" class="oi-chart-hint muted small" aria-live="polite"></p>
+    <div id="oiChart" class="chart"></div>
+    <p class="oi-chart-hint muted small">История текущей монеты копится во время работы приложения, до 24 часов. Нажми на биржу в таблице ОИ, чтобы открыть её график.</p>
+  </section>
 </main>
 
 <main class="view health" id="viewHealth" hidden>

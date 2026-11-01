@@ -63,3 +63,41 @@ def test_history_is_bounded_and_removed_stream_is_forgotten():
     assert not a.flows[s.key]
     a.drop_stream(s.key)
     assert s.key not in a.flows and s.key not in a.last
+
+
+def test_oi_chart_preserves_coins_usd_and_observation_times():
+    a = Analytics()
+    a.reset("X")
+    a.oi("A:perp", 1000, 100, 200)
+    a.oi("A:perp", 1010, 120, 250)
+    a.oi("B:perp", 1005, 500, 900)
+    data = a.oi_series("A:perp", 1011, 900)
+    assert data["coin"] == "X" and data["key"] == "A:perp"
+    assert data["points"] == [(1000, 100, 200), (1010, 120, 250)]
+    assert data["last_ts"] == 1010 and not data["stale"]
+    assert a.oi_series("A:perp", 1080, 900)["stale"]
+
+
+def test_oi_chart_downsamples_old_history_and_marks_gaps():
+    a = Analytics()
+    for ts in (0, 5, 10, 65, 70, 5000):
+        a.oi("A:perp", ts, ts + 1, None)
+    # Tick prunes the dense hour; older values survive at one point per minute.
+    a.tick(5001, None, {})
+    short = a.oi_series("A:perp", 5001, 3600)
+    long = a.oi_series("A:perp", 5001, 14400)
+    assert short["points"] == [(5000, 5001, None)]
+    assert long["points"] == [(10, 11, None), (70, 71, None), (5000, 5001, None)]
+    assert 5000 - 70 > long["max_gap_sec"]
+    a.drop_stream("A:perp")
+    assert not a.oi_series("A:perp", 5001, 14400)["points"]
+
+
+def test_oi_history_is_bounded_and_out_of_order_values_are_ignored():
+    a = Analytics()
+    for minute in range(1500):
+        a.oi("A:perp", minute * 60, 100, 200)
+    a.oi("A:perp", 5, 999, 999)
+    assert len(a.oi_history["A:perp"]) <= 1441
+    assert len(a.oi_grid["A:perp"]) <= 724
+    assert a.oi_last["A:perp"][1] == 100
