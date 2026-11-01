@@ -18,7 +18,9 @@ TRADES_URL = f"{BASE}/alpha-trade/agg-trades"
 TOKENS_TTL = 600.0
 
 log = logging.getLogger(__name__)
-MAKER_KEYS = ("m", "isBuyerMaker", "buyerMaker", "isBuyerMarker")  # true = buyer is maker -> taker sold
+# Alpha's `m` is deprecated. It is not a trustworthy aggressor-side flag.
+# https://developers.binance.com/en/docs/catalog/advanced-trading-alpha-trading/api/rest-api/market-data
+MAKER_KEYS = ("isBuyerMaker", "buyerMaker", "isBuyerMarker")
 SIDE_KEYS = ("side", "S", "takerSide", "direction", "type")
 BUY_WORDS = {"buy", "b", "bid", "long", "1"}
 SELL_WORDS = {"sell", "s", "ask", "short", "2", "-1"}
@@ -61,10 +63,7 @@ def flag(v) -> bool | None:
 
 
 def taker_side(t: dict) -> str | None:
-    """Aggressor side from whichever field the feed uses; None when it has none."""
-    for k in MAKER_KEYS:
-        if k in t and (maker := flag(t[k])) is not None:
-            return "sell" if maker else "buy"
+    """Use an explicit side when supplied, never the deprecated Alpha `m` field."""
     for k in SIDE_KEYS:
         v = str(t.get(k) or "").strip().lower()
         if v in BUY_WORDS:
@@ -73,6 +72,9 @@ def taker_side(t: dict) -> str | None:
             return "sell"
     if "isBuy" in t and (buy := flag(t["isBuy"])) is not None:
         return "buy" if buy else "sell"
+    for k in MAKER_KEYS:
+        if k in t and (maker := flag(t[k])) is not None:
+            return "sell" if maker else "buy"
     return None
 
 
@@ -93,8 +95,8 @@ class BinanceAlphaStream(Stream):
         super().__init__(venue, kind, coin, on_trades)
         self.session = session
         self.transport = "rest"
-        self._last_price = 0.0
-        self._last_side = "?"
+        # Each row already has its own aggregate ID: equal timestamps are not one order.
+        self.merge_fills = False
         self._logged_sample = False
 
     async def resolve(self) -> None:
@@ -114,22 +116,20 @@ class BinanceAlphaStream(Stream):
             self._logged_sample = True
             log.info("%s %s trade sample: %s", self.key, self.symbol, rows[0])
         out = []
-        for t in sorted(rows, key=lambda r: num(r.get("T"))):
+        for t in sorted(rows, key=lambda r: (num(r.get("T")), num(r.get("a")))):
             p, q = num(t.get("p") or t.get("price")), num(t.get("q") or t.get("qty"))
             if p <= 0 or q <= 0:
                 continue
             side = taker_side(t)
-            inferred = side is None
-            if side is None:  # no side in the feed: tick rule (uptick = buy, downtick = sell)
-                if self._last_price and p != self._last_price:
-                    side = "buy" if p > self._last_price else "sell"
-                else:
-                    side = self._last_side
-            self._last_price, self._last_side = p, side
+            # Infer in Stream._prepare, AFTER poll_loop removes overlapping/replayed rows.
+            # Replaying the old REST page through a tick rule would corrupt its price anchor.
             ts = num(t.get("T")) / 1000 or time.time()
-            key = t.get("a") or (t.get("T"), t.get("p"), t.get("q"))
-            out.append((key, Trade(ts, p, q, p * q, side, inferred=inferred, tid=str(t.get("a") or ""))))
+            key = t["a"] if t.get("a") is not None else (t.get("T"), p, q)
+            out.append((key, Trade(ts, p, q, p * q, side or "?", tid=str(t.get("a", "")))))
         return out
+
+    def info(self) -> dict:
+        return {**super().info(), "side_source": "price_tick_fallback"}
 
     async def stream(self) -> None:
         await poll_loop(self.fetch_trades, self.emit, interval=1.0, emit_first=self._seed_poll, seen=self.poll_seen)

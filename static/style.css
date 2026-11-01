@@ -334,6 +334,13 @@ th.sorted::after { content: " ▾"; }
 
 /* Minimal analysis and per-coin venue selection. */
 .a-cvd { grid-column: 1 / -1; }
+.a-oi-chart { grid-column: 1 / -1; }
+.oi-chart-head { flex-wrap: wrap; }
+.oi-chart-head select { max-width: 220px; }
+.oi-chart-hint { margin: 6px 12px; }
+.chart .s-oi { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.chart .oi-dot { fill: var(--accent); }
+.oi-open { padding: 0 4px; }
 .a-venues, .a-oi { grid-column: span 6; max-height: 55vh; }
 .venue-tools { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
 .venue-tools input { min-width: 0; flex: 1; }

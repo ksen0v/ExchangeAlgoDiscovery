@@ -34,6 +34,7 @@ def trade_row(coin: str, key: str, t: Trade, rep: tuple[int, int] | None) -> dic
         "amount": t.amount,
         "usd": t.usd,
         "fills": t.fills,
+        "inferred": t.inferred,
     }
     if rep:
         row["grp"], row["rep"] = rep

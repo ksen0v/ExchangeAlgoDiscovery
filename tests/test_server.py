@@ -138,6 +138,19 @@ def test_minimal_analytics_endpoints(client):
         assert client.get(path).status_code == 404
 
 
+def test_oi_history_endpoint_is_scoped_to_current_coin_and_perp(client):
+    import time
+
+    now = time.time()
+    main.S.analytics.oi("Binance:perp", now, 100, 200)
+    r = client.get("/api/oi/history", params={"coin": "DEMOX", "key": "Binance:perp", "seconds": 3600})
+    assert r.status_code == 200
+    assert r.json()["points"][-1] == [now, 100, 200]
+    assert client.get("/api/oi/history?coin=OTHER&key=Binance:perp").status_code == 409
+    assert client.get("/api/oi/history?coin=DEMOX&key=Binance:spot").status_code == 404
+    assert client.get("/api/oi/history?coin=DEMOX&key=Binance:perp&seconds=999").status_code == 400
+
+
 def test_venue_selection_is_per_coin_and_persisted(client):
     original = main.S.manager.streams["Binance:spot"]
     r = client.put("/api/venues", json={"coin": "DEMOX", "venues": ["Binance"]})

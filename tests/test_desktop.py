@@ -27,6 +27,11 @@ def trade(key="KuCoin:spot", usd=2000.0, side="buy", **kw):
     return {"ts": NOW, "key": key, "side": side, "price": 1.0, "amount": usd, "usd": usd, **kw}
 
 
+def test_overlay_preserves_estimated_side_marker():
+    assert row_from(trade(inferred=True)).inferred
+    assert not row_from(trade()).inferred
+
+
 def test_prefs_roundtrip_and_tolerant_load(tmp_path):
     path = tmp_path / "desktop.json"
     p = Prefs()

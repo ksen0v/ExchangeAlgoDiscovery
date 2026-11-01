@@ -80,11 +80,12 @@ class Row:
     usd: float
     grp: int = 0
     rep: int = 0
+    inferred: bool = False
 
 
 def row_from(d: dict) -> Row:
     venue, kind = split_key(d["key"])
-    return Row(d["ts"], venue, kind, d.get("side", "?"), d["price"], d["amount"], d["usd"], d.get("grp", 0), d.get("rep", 0))
+    return Row(d["ts"], venue, kind, d.get("side", "?"), d["price"], d["amount"], d["usd"], d.get("grp", 0), d.get("rep", 0), bool(d.get("inferred")))
 
 
 @dataclass(slots=True)
@@ -159,7 +160,7 @@ class TapeView(QWidget):
             "venue": max((adv(r.venue) for r in recent), default=adv("Binance")) + adv(" F"),
             "price": max((adv(fmt_price(r.price)) for r in recent), default=0) if self.prefs.show_price else 0,
             "qty": adv("000.00k") if self.prefs.show_qty else 0,
-            "usd": QFontMetrics(self.bold).horizontalAdvance("$000.0k"),
+            "usd": QFontMetrics(self.bold).horizontalAdvance("≈$000.0k"),
             "rep": adv("×99") if self.prefs.highlight_repeats else 0,
         }
         for drop in ("qty", "price", "time"):
@@ -233,7 +234,7 @@ class TapeView(QWidget):
                 text(cols["price"], fmt_price(r.price), TEXT)
             if "qty" in cols:
                 text(cols["qty"], fmt_qty(r.amount), TEXT_2)
-            text(cols["usd"], fmt_usd(r.usd), side.lighter(125) if big else side, font=self.bold if big else self.font_)
+            text(cols["usd"], ("≈" if r.inferred else "") + fmt_usd(r.usd), side.lighter(125) if big else side, font=self.bold if big else self.font_)
             if rep_color and "rep" in cols:
                 text(cols["rep"], f"×{r.rep}", rep_color, font=self.bold)
             y += lh

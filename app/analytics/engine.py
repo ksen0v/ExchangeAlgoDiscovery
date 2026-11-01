@@ -8,6 +8,8 @@ STEP = 5
 WINDOWS = ((60, "1m"), (300, "5m"), (900, "15m"), (3600, "1h"))
 KEEP = 3610
 OI_TTL = 60
+OI_HISTORY_SEC = 86400
+OI_CHART_WINDOWS = (900, 3600, 14400, 86400)
 
 
 class Analytics:
@@ -23,7 +25,8 @@ class Analytics:
         self.flows = defaultdict(dict)
         self.last = {}
         self.oi_last = {}
-        self.oi_grid = defaultdict(deque)
+        self.oi_grid = defaultdict(lambda: deque(maxlen=KEEP // STEP + 2))
+        self.oi_history = defaultdict(lambda: deque(maxlen=1441))
         self.cvd = {"spot": 0.0, "perp": 0.0}
         self.cvd_points = deque(maxlen=360)
         self._grid_at = self._minute_at = -1
@@ -38,7 +41,7 @@ class Analytics:
         feed = self.feeds.pop(key, None)
         if feed:
             feed.stop()
-        for data in (self.flows, self.last, self.oi_last, self.oi_grid):
+        for data in (self.flows, self.last, self.oi_last, self.oi_grid, self.oi_history):
             data.pop(key, None)
 
     def on_trades(self, stream, trades: list, live: bool = True) -> None:
@@ -62,7 +65,34 @@ class Analytics:
         return sum(b - s for i, (b, s) in self.flows.get(key, {}).items() if i >= cutoff)
 
     def oi(self, key: str, ts: float, coins: float, usd: float | None) -> None:
+        previous = self.oi_last.get(key)
+        if previous and ts <= previous[0]:
+            return
         self.oi_last[key] = (ts, coins, usd)
+        point = (ts, coins, usd)
+        self.oi_grid[key].append(point)
+        history = self.oi_history[key]
+        if history and int(history[-1][0]) // 60 == int(ts) // 60:
+            history[-1] = point
+        else:
+            history.append(point)
+        while history and history[0][0] < ts - OI_HISTORY_SEC:
+            history.popleft()
+
+    def oi_series(self, key: str, now: float, seconds: int) -> dict:
+        """Only the requested venue's history; never broadcast histories of all venues."""
+        dense = self.oi_grid.get(key, ())
+        points = list(dense)
+        if seconds > 3600:
+            # Minute samples for older data, actual 5–10 s observations for the latest hour.
+            before = points[0][0] if points else now
+            points = [p for p in self.oi_history.get(key, ()) if p[0] < before] + points
+        points = [p for p in points if now - seconds <= p[0] <= now]
+        last = self.oi_last.get(key)
+        return {"coin": self.coin, "key": key, "ts": now, "seconds": seconds, "points": points,
+                "max_gap_sec": 90 if seconds > 3600 else 30,
+                "last_ts": last[0] if last else None,
+                "stale": last is None or now - last[0] >= OI_TTL}
 
     def sync_feeds(self, streams: dict) -> None:
         from app.collectors.ccxt_stream import CcxtStream
@@ -88,9 +118,6 @@ class Analytics:
         grid = int(now) // STEP
         if grid != self._grid_at:
             self._grid_at = grid
-            for key, (ts, coins, _) in self.oi_last.items():
-                if now - ts < OI_TTL and streams.get(key) and streams[key].status in ("live", "polling"):
-                    self.oi_grid[key].append((grid * STEP, coins))
             for points in self.oi_grid.values():
                 while points and points[0][0] < now - KEEP:
                     points.popleft()
@@ -134,8 +161,8 @@ class Analytics:
             if fresh:
                 for sec, label in WINDOWS:
                     target = now - sec
-                    old = next(((ts, v) for ts, v in reversed(self.oi_grid[key]) if ts <= target), None)
-                    if old and target - old[0] <= 2 * STEP and old[1] > 0:
+                    old = next(((ts, v) for ts, v, _ in reversed(self.oi_grid[key]) if ts <= target), None)
+                    if old and target - old[0] <= 3 * STEP and old[1] > 0:
                         r["d"][label] = last[1] - old[1]
                         r["pct"][label] = (last[1] / old[1] - 1) * 100
             rows.append(r)
