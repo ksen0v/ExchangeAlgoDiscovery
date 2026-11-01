@@ -90,6 +90,8 @@ class UpdateDialog(QDialog):
         job.start()
 
     def _checked(self, release):
+        if self.job is None or self.job.cancel.is_set():
+            return
         self.busy = False
         self.check.setEnabled(True)
         self.release = release
@@ -119,13 +121,19 @@ class UpdateDialog(QDialog):
         job.start(self.release)
 
     def _progress(self, done, total):
+        if self.job is None or self.job.cancel.is_set():
+            return
         self.progress.setValue(int(done * 100 / total))
 
     def _ready(self, path):
+        if self.job is None or self.job.cancel.is_set() or not self.isVisible():
+            return  # a completion queued before Cancel must never install afterwards
         self.busy = False
         self.install_requested.emit(path)
 
     def _failed(self, message):
+        if self.job is None or self.job.cancel.is_set():
+            return
         self.busy = False
         self.message.setText(message)
         self.check.setEnabled(True)

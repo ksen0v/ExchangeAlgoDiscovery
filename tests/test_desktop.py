@@ -32,6 +32,20 @@ def test_overlay_preserves_estimated_side_marker():
     assert not row_from(trade()).inferred
 
 
+def test_cancelled_updater_never_installs_a_queued_download(qapp):
+    from desktop.update_dialog import UpdateDialog, UpdateJob
+
+    dialog = UpdateDialog()
+    dialog.job = UpdateJob()
+    installed = []
+    dialog.install_requested.connect(installed.append)
+    dialog.show()
+    dialog.reject()
+    dialog._ready("cancelled-update.exe")
+    assert dialog.job.cancel.is_set() and not installed
+    dialog.close()
+
+
 def test_prefs_roundtrip_and_tolerant_load(tmp_path):
     path = tmp_path / "desktop.json"
     p = Prefs()
