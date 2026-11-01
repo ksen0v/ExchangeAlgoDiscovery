@@ -38,6 +38,7 @@ from desktop.feed import Feed
 from desktop.hotkeys import Hotkeys
 from desktop.overlay import OverlayWindow
 from desktop.prefs import APP_NAME, MAX_EXTRA, ExtraOverlay, OverlayPrefs, Prefs, data_dir
+from desktop.version import VERSION
 
 log = logging.getLogger("desktop")
 LOAD_RETRIES = 10
@@ -95,7 +96,7 @@ class MainWindow(QMainWindow):
     def __init__(self, ctl: "Controller"):
         super().__init__()
         self.ctl = ctl
-        self.setWindowTitle("Manipulation Radar")
+        self.setWindowTitle(f"Manipulation Radar {VERSION}")
         self.resize(1400, 860)
 
         tb = QToolBar("Оверлей")
@@ -118,6 +119,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.status)
         tb.addAction(ctl.act_browser)
         tb.addAction(ctl.act_connection)
+        tb.addAction(ctl.act_update)
         tb.addAction(ctl.act_data)
 
         self.stack = QStackedWidget()
@@ -268,6 +270,7 @@ class Controller(QObject):
         self._lock_hint_shown = False
         self._started = False
         self._hidden_by_hotkey: list[OverlaySlot] = []
+        self.update_dialog = None
 
         self.server: EmbeddedServer | None = None
         demo = args.demo or prefs.demo
@@ -343,6 +346,9 @@ class Controller(QObject):
         self.act_browser.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(self.web_url())))
         self.act_connection = QAction("🔌 Подключение…", self)
         self.act_connection.triggered.connect(self.open_connection)
+        self.act_update = QAction("Обновления…", self)
+        self.act_update.setToolTip(f"Версия {VERSION} · проверить обновления")
+        self.act_update.triggered.connect(self.open_updates)
         self.act_data = QAction("📁 Папка данных", self)
         self.act_data.setToolTip("Настройки приложения, .env и база алертов")
         self.act_data.triggered.connect(self.open_data_folder)
@@ -419,6 +425,7 @@ class Controller(QObject):
             menu.addAction(slot.action)
         menu.addAction(self.act_add_coin)
         menu.addAction(self.act_lock)
+        menu.addAction(self.act_update)
         menu.addSeparator()
         menu.addAction("Выход", self.quit)
 
@@ -697,6 +704,45 @@ class Controller(QObject):
         QProcess.startDetached(program, argv)
         self.quit()
 
+    def open_updates(self) -> None:
+        from desktop.update_dialog import UpdateDialog
+
+        if self.update_dialog is not None:
+            self.update_dialog.raise_()
+            self.update_dialog.activateWindow()
+            return
+        dialog = UpdateDialog(self.main)
+        self.update_dialog = dialog
+        dialog.install_requested.connect(lambda path: self._install_update(path, dialog))
+        QTimer.singleShot(0, dialog.check_now)
+        try:
+            dialog.exec()
+        finally:
+            if dialog.job:
+                dialog.job.cancel.set()
+            self.update_dialog = None
+            dialog.deleteLater()
+
+    def _install_update(self, path: str, dialog) -> None:
+        from pathlib import Path
+        from PySide6.QtCore import QProcess
+        from desktop.updates import installer_args
+
+        if not getattr(sys, "frozen", False) or sys.platform != "win32":
+            dialog._failed("Установка обновлений доступна в Windows-сборке .exe")
+            return
+        installer = Path(path).resolve()
+        if installer.parent != (data_dir() / "updates").resolve() or not installer.is_file():
+            dialog._failed("Проверенный установщик не найден. Повторите загрузку")
+            return
+        self.save_prefs()
+        started, _pid = QProcess.startDetached(str(installer), installer_args(os.getpid()))
+        if not started:
+            dialog._failed("Не удалось запустить установщик. Приложение продолжает работать")
+            return
+        dialog.accept()
+        self.quit()  # the installer waits for this process to finish before replacing files
+
     # ---- shutdown --------------------------------------------------------
     def save_prefs(self) -> None:
         self.prefs.main_geometry = self.main.saveGeometry().toHex().data().decode()
@@ -740,6 +786,7 @@ class Controller(QObject):
             "overlay_rows": len(main.overlay.tape.rows),
             "dashboard_loaded": self.main.web_ok,
             "coin": main.overlay.coin,
+            "version": VERSION,
             "extra": {s.coin: {"trades": s.got_trades, "rows": len(s.overlay.tape.rows)} for s in self.extra_slots},
         }
         ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"]

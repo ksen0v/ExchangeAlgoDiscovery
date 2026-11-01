@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # attach the build to a release on v* tags
+  contents: write  # publish verified installers as GitHub Releases
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows:
@@ -28,6 +32,10 @@ jobs:
 
       - name: Install
         run: pip install -r requirements-desktop.txt -r requirements-dev.txt pyinstaller
+
+      - name: Set build version
+        id: version
+        run: python -m scripts.prepare_version
 
       - name: Tests
         run: python -m pytest -q
@@ -49,6 +57,46 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist\ManipulationRadar -DestinationPath ManipulationRadar-windows.zip
 
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) { throw 'Inno Setup is missing from the runner image' }
+          & $compiler '/DAppVersion=${{ steps.version.outputs.version }}' desktop\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
+          python -m scripts.update_manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create update manifest' }
+
+      - name: Verify install and upgrade preserve user data
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $pwd 'dist\ManipulationRadar-Setup.exe'
+          $installRoot = Join-Path $pwd 'installer-test'
+          $env:RADAR_HOME = Join-Path $pwd 'installer-selftest'
+          $p = Start-Process -FilePath $installer -WindowStyle Hidden -PassThru -Wait -ArgumentList '/VERYSILENT', '/SP-', '/NORESTART', '/NORUN=1', "/DIR=`"$installRoot`""
+          if ($p.ExitCode -ne 0) { throw "First installation failed: $($p.ExitCode)" }
+          New-Item -ItemType Directory -Force -Path $env:RADAR_HOME | Out-Null
+          $prefsFile = Join-Path $env:RADAR_HOME 'desktop.json'
+          [System.IO.File]::WriteAllText($prefsFile, '{"overlay":{"min_usd":1234}}')
+          $prefsHash = (Get-FileHash -LiteralPath $prefsFile -Algorithm SHA256).Hash
+          $envFile = Join-Path $env:RADAR_HOME '.env'
+          [System.IO.File]::WriteAllText($envFile, "# Existing user configuration`n")
+          $envHash = (Get-FileHash -LiteralPath $envFile -Algorithm SHA256).Hash
+          $oldApp = Start-Process -FilePath (Join-Path $installRoot 'ManipulationRadar.exe') -WindowStyle Hidden -PassThru -ArgumentList '--demo', '--selftest', '20'
+          # The updater waits for the old app to exit before touching its files. NORUN avoids
+          # starting a real exchange session after this CI-only upgrade.
+          $p = Start-Process -FilePath $installer -WindowStyle Hidden -PassThru -Wait -ArgumentList '/VERYSILENT', '/SP-', '/NORESTART', '/NORUN=1', '/RADARUPDATE=1', "/RADARPID=$($oldApp.Id)", "/DIR=`"$installRoot`""
+          if ($p.ExitCode -ne 0) { throw "Upgrade failed: $($p.ExitCode)" }
+          $oldApp.WaitForExit()
+          if ($oldApp.ExitCode -ne 0) { throw "Installed application smoke test failed: $($oldApp.ExitCode)" }
+          if ((Get-FileHash -LiteralPath $prefsFile -Algorithm SHA256).Hash -ne $prefsHash) { throw 'User preferences changed during upgrade' }
+          if ((Get-FileHash -LiteralPath $envFile -Algorithm SHA256).Hash -ne $envHash) { throw 'User .env changed during upgrade' }
+          $result = Get-Content -LiteralPath (Join-Path $env:RADAR_HOME 'selftest.json') -Raw | ConvertFrom-Json
+          if (-not $result.ok -or $result.version -ne '${{ steps.version.outputs.version }}') { throw 'Installed build version or startup check failed' }
+
       - uses: actions/upload-artifact@v4
         with:
           name: ManipulationRadar-windows
@@ -56,14 +104,35 @@ jobs:
           retention-days: 30
 
       - uses: actions/upload-artifact@v4
+        with:
+          name: ManipulationRadar-installer
+          path: |
+            dist/ManipulationRadar-Setup.exe
+            dist/update.json
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: selftest
-          path: selftest/
+          path: |
+            selftest/
+            installer-selftest/
           if-no-files-found: ignore
 
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/minimal-radar' || startsWith(github.ref, 'refs/tags/v'))
         uses: softprops/action-gh-release@v2
         with:
-          files: ManipulationRadar-windows.zip
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Manipulation Radar ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          fail_on_unmatched_files: true
+          body: |
+            Установщик Windows. При первой установке запустите ManipulationRadar-Setup.exe.
+            Следующие версии доступны через «Обновления…» в приложении.
+            Настройки и база данных сохраняются в папке пользователя.
+          files: |
+            dist/ManipulationRadar-Setup.exe
+            dist/update.json
