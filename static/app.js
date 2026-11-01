@@ -54,6 +54,9 @@ async function api(path, opts = {}) {
 const S = {
   coin: "",
   config: {},
+  venues: [],
+  venueSelection: {},
+  watch: [],
   telegram: false,
   streams: [],
   selected: new Set(store.get("selected", [])),
@@ -144,18 +147,12 @@ $("wallForm").addEventListener("submit", async (e) => {
 });
 
 // М12: venue quality 0..1; below the threshold the venue is left out of the delta / regime sums
-function qualityCell(score) {
-  if (score == null) return '<span class="dim" title="Мало данных: оценка появится через ~30 минут торгов">—</span>';
-  const thr = (window.A && A.snap && A.snap.quality && A.snap.quality.exclude_below) || 0.3;
-  const bad = score < thr;
-  return `<span class="${bad ? "q-bad" : score < 0.6 ? "warn" : ""}" title="${bad ? "Исключена из сумм: похоже на нарисованный объём" : "Качество площадки"}">${score.toFixed(2)}</span>`;
-}
-
 function isActive(s) {
   return (s.status === "live" || s.status === "polling") && s.price != null;
 }
 
 function renderStreams() {
+  if (document.hidden || (window.A && A.view !== "tape")) return;
   const cfg = S.config;
   const active = S.streams.filter(isActive).filter((s) => !S.hideQuiet || s.vol_w > 0);
   active.sort((a, b) => (b.score - a.score) || (b.vol_w - a.vol_w));
@@ -186,16 +183,17 @@ function renderStreams() {
       <td>${algo}</td>
       <td class="wallcell">${wall}</td>
       <td class="r">${share}</td>
-      <td class="r">${qualityCell(s.quality)}</td>
       <td class="r score"><b>${s.score.toFixed(0)}</b></td>
       <td>${sparkSvg(s.spark || [])}</td>
     </tr>`;
     if ((hot || warm) && s.reasons && s.reasons.length) {
-      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="13">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
+      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="12">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
     }
     return html;
   });
-  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="13" class="empty">Подключаемся к биржам…</td></tr>`;
+  const noVenues = S.venueSelection[S.coin]?.length === 0;
+  $("venuesBtn").textContent = `Биржи: ${S.venueSelection[S.coin]?.length ?? S.venues.length}/${S.venues.length}`;
+  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="12" class="empty">${noVenues ? "Все биржи отключены. Выберите их в «Биржи монеты»." : "Подключаемся к биржам…"}</td></tr>`;
 
   const inactive = S.streams.filter((s) => !isActive(s));
   const label = { na: "нет пары", noapi: "нет публичного API", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
@@ -269,9 +267,8 @@ function tapeRowHtml(r) {
 
 function addTrades(rows) {
   // rows arrive oldest -> newest
-  for (const r of rows) S.tape.unshift(r);
-  if (S.tape.length > TAPE_KEEP) S.tape.length = TAPE_KEEP;
-  if (S.paused) return;
+  S.tape = rows.slice().reverse().concat(S.tape).slice(0, TAPE_KEEP);
+  if (S.paused || document.hidden || (window.A && A.view !== "tape")) return;
   const vis = rows.filter(tapeVisible);
   if (!vis.length) return;
   const list = $("tapeList");
@@ -425,7 +422,7 @@ function setCoin(coin) {
   $("coinInput").placeholder = coin;
   document.title = `${coin} · Manipulation Radar`;
   S.tape = [];
-  if (window.A) { window.A.snap = null; $("regimeStrip").innerHTML = ""; }
+  if (window.A) window.A.snap = null;
   S.selected.clear();
   store.set("selected", []);
   renderChips();
@@ -447,6 +444,68 @@ $("coinForm").addEventListener("submit", async (e) => {
   } catch (err) {
     toast(err.message);
   }
+});
+
+// Per-coin collection settings (independent of tape display filters).
+const V = { coin: "", selected: new Set(), all: true, request: 0 };
+function renderVenueSelection() {
+  const query = $("venuesSearch").value.toLowerCase();
+  $("venuesAll").checked = V.all;
+  $("venuesList").innerHTML = S.venues.filter((v) => v.name.toLowerCase().includes(query)).map((v) => `<label class="check"><input type="checkbox" data-venue="${esc(v.name)}" ${V.all || V.selected.has(v.name) ? "checked" : ""}> <span>${esc(v.name)}<small>${[v.spot && "спот", v.perp && "фьючерсы"].filter(Boolean).join(" · ")}</small></span></label>`).join("");
+  $("venuesCount").textContent = `${V.all ? S.venues.length : V.selected.size} / ${S.venues.length}`;
+}
+async function loadVenueSelection() {
+  const request = ++V.request;
+  const coin = $("venuesCoin").value.trim().toUpperCase();
+  $("venuesSave").disabled = true;
+  V.coin = "";
+  if (!/^[A-Z0-9]{1,20}$/.test(coin)) { toast("Введите тикер монеты"); return; }
+  try {
+    const data = await api(`/api/venues?coin=${encodeURIComponent(coin)}`);
+    if (request !== V.request) return;
+    V.coin = data.coin;
+    V.all = data.venues === null;
+    V.selected = new Set(data.venues || []);
+    renderVenueSelection();
+    $("venuesSave").disabled = false;
+  } catch (err) { toast(err.message); }
+}
+$("venuesBtn").addEventListener("click", () => {
+  $("venuesCoin").value = S.coin;
+  $("venuesCoins").innerHTML = [...new Set([S.coin, ...S.watch, ...Object.keys(S.venueSelection)])].map((c) => `<option value="${esc(c)}"></option>`).join("");
+  $("venuesSearch").value = "";
+  $("venuesDlg").showModal();
+  loadVenueSelection();
+});
+$("venuesCoin").addEventListener("input", () => {
+  $("venuesSave").disabled = true;
+  ++V.request;
+  clearTimeout(V.timer);
+  V.timer = setTimeout(loadVenueSelection, 300);
+});
+$("venuesCoin").addEventListener("change", loadVenueSelection);
+$("venuesSearch").addEventListener("input", renderVenueSelection);
+$("venuesSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
+$("venuesAll").addEventListener("change", () => { V.all = $("venuesAll").checked; V.selected = new Set(V.all ? [] : S.venues.map((v) => v.name)); renderVenueSelection(); });
+$("venuesNone").addEventListener("click", () => { V.all = false; V.selected.clear(); renderVenueSelection(); });
+$("venuesList").addEventListener("change", (e) => {
+  const name = e.target.dataset.venue;
+  if (!name) return;
+  if (V.all) { V.selected = new Set(S.venues.map((v) => v.name)); V.all = false; }
+  if (e.target.checked) V.selected.add(name); else V.selected.delete(name);
+  renderVenueSelection();
+});
+$("venuesCancel").addEventListener("click", () => $("venuesDlg").close());
+$("venuesForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!V.coin || $("venuesSave").disabled || V.coin !== $("venuesCoin").value.trim().toUpperCase()) return;
+  $("venuesSave").disabled = true;
+  try {
+    const data = await api("/api/venues", { method: "PUT", body: JSON.stringify({ coin: V.coin, venues: V.all ? null : [...V.selected] }) });
+    if (data.venues === null) delete S.venueSelection[data.coin]; else S.venueSelection[data.coin] = data.venues;
+    $("venuesDlg").close();
+    toast(`Биржи для ${data.coin} сохранены`);
+  } catch (err) { toast(err.message); } finally { $("venuesSave").disabled = false; }
 });
 
 // ---------- settings ----------
@@ -478,7 +537,6 @@ function openSettings() {
     ? "Telegram настроен."
     : "Telegram не настроен: укажите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env и перезапустите.";
   $("settingsDlg").showModal();
-  if (window.renderModulesSettings) window.renderModulesSettings();
 }
 $("settingsBtn").addEventListener("click", openSettings);
 $("settingsForm").addEventListener("submit", async (e) => {
@@ -490,7 +548,6 @@ $("settingsForm").addEventListener("submit", async (e) => {
   body.wall_ignore_mm = $("settingsForm").elements.wall_ignore_mm.checked;
   try {
     S.config = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
-    if (window.saveModulesSettings) await window.saveModulesSettings();
     toast("Настройки сохранены");
     renderStreams();
   } catch (err) {
@@ -503,8 +560,9 @@ $("tgTest").addEventListener("click", async () => {
 
 // ---------- websocket ----------
 function sendFilter() {
-  const analytics = !!(window.A && window.A.view === "analysis");
-  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd, analytics }));
+  const analytics = !document.hidden && !!(window.A && A.view === "analysis");
+  const lite = document.hidden || !!(window.A && A.view !== "tape");
+  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd, analytics, lite }));
 }
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -528,8 +586,12 @@ function connect() {
       setCoin(msg.coin);
     } else if (msg.type === "analytics") {
       onAnalytics(msg);
-    } else if (msg.type === "regime") {
-      onRegime(msg);
+    } else if (msg.type === "watch") {
+      S.watch = msg.coins || [];
+    } else if (msg.type === "venues") {
+      if (msg.venues === null) delete S.venueSelection[msg.coin];
+      else S.venueSelection[msg.coin] = msg.venues;
+      if (msg.coin === S.coin) { S.selected.clear(); renderChips(); rebuildTape(); }
     }
   };
 }
@@ -541,6 +603,9 @@ async function init() {
   try {
     const st = await api("/api/state");
     S.config = st.config;
+    S.venues = st.venues;
+    S.watch = st.watch || [];
+    S.venueSelection = st.venue_selection || {};
     S.telegram = st.telegram;
     $("demoBadge").hidden = !st.demo;
     setCoin(st.coin);

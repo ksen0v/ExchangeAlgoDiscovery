@@ -191,7 +191,6 @@ class OverlaySlot(QObject):
         self.feed.request_failed.connect(ctl.notify_error)
         if self.is_main:
             self.feed.walls.connect(self.overlay.add_walls)
-            self.feed.regime.connect(self.overlay.set_regime)
         self.overlay.settings_requested.connect(lambda: ctl.open_overlay_settings(self))
         self.overlay.lock_requested.connect(lambda: ctl.act_lock.setChecked(True))
         self.overlay.hide_requested.connect(lambda: self.action.setChecked(False))
@@ -345,7 +344,7 @@ class Controller(QObject):
         self.act_connection = QAction("🔌 Подключение…", self)
         self.act_connection.triggered.connect(self.open_connection)
         self.act_data = QAction("📁 Папка данных", self)
-        self.act_data.setToolTip("Настройки модулей (radar.yaml), ключи (.env), записанные данные, журнал")
+        self.act_data.setToolTip("Настройки приложения, .env и база алертов")
         self.act_data.triggered.connect(self.open_data_folder)
 
     def open_data_folder(self) -> None:
@@ -729,8 +728,6 @@ class Controller(QObject):
 
     # ---- self test (CI smoke test of the built .exe) ---------------------
     def selftest(self) -> None:
-        from app.analytics import labmodel  # here: the embedded server has set up the environment by now
-
         out = data_dir()
         main = self.main_slot
         main.overlay.grab().save(str(out / "selftest-overlay.png"))
@@ -743,11 +740,9 @@ class Controller(QObject):
             "overlay_rows": len(main.overlay.tape.rows),
             "dashboard_loaded": self.main.web_ok,
             "coin": main.overlay.coin,
-            "regime": main.overlay.header.regime.text(),  # М3 badge (informational)
             "extra": {s.coin: {"trades": s.got_trades, "rows": len(s.overlay.tape.rows)} for s in self.extra_slots},
-            "lab": labmodel.selfcheck(),  # the laboratory's LightGBM loads and trains in the built .exe
         }
-        ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"] and result["lab"] == "ok"
+        ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"]
         ok = ok and all(v["trades"] > 0 for v in result["extra"].values())
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")

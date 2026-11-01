@@ -191,21 +191,38 @@ class CcxtStream(Stream):
         if not self.ws_book:
             await super().book_loop()  # REST polling
             return
-        self.book_status = "live"
-        while True:
-            if not self.books_on():
-                await asyncio.sleep(1)
-                continue
-            ex = self.ex
-            if ex is None:  # the trade watchdog is reconnecting the instance
-                await asyncio.sleep(1)
-                continue
-            try:
-                ob = await asyncio.wait_for(ex.watch_order_book(self.symbol), 60)
-            except asyncio.TimeoutError:
-                continue  # a quiet book; ccxt reconnects dropped sockets itself
-            if self.book_due():
-                self.emit_book(*self.convert_book(ob))
+        book_ex = None
+        try:
+            self.book_status = "live"
+            while True:
+                if not self.books_on():
+                    await asyncio.sleep(1)
+                    continue
+                ex = self.ex
+                if ex is None:  # the trade watchdog is reconnecting the instance
+                    await asyncio.sleep(1)
+                    continue
+                try:
+                    book_ex = ex
+                    ob = await asyncio.wait_for(ex.watch_order_book(self.symbol), 60)
+                except asyncio.TimeoutError:
+                    continue  # a quiet book; ccxt reconnects dropped sockets itself
+                if self.book_due():
+                    self.emit_book(*self.convert_book(ob))
+        finally:
+            ex = book_ex
+            if ex is not None:
+                unsubscribed = False
+                if ex.has.get("unWatchOrderBook"):
+                    try:
+                        await asyncio.wait_for(ex.un_watch_order_book(self.symbol), 5)
+                        unsubscribed = True
+                    except Exception:
+                        pass
+                if not unsubscribed and self.ex is ex:
+                    # Without unsubscribe, close the shared socket and let the trade watchdog reconnect.
+                    self.ex = None
+                    await self.pool.release(ex)
 
     async def _fetch(self, limit: int | None) -> list[dict]:
         try:

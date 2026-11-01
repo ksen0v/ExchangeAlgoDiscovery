@@ -23,7 +23,7 @@ BookCallback = Callable[["Stream", float, list[tuple[float, float]], list[tuple[
 
 BOOK_EVERY = 0.5  # s between processed book snapshots (walls need no 100 ms resolution)
 BOOK_POLL = 2.0  # s between REST depth requests where there is no WebSocket book
-BOOK_DEPTH = 200  # levels per side (М5 needs depth up to ±5 %; the wall detector looks at the first 50)
+BOOK_DEPTH = 50  # only the near-price levels needed by the wall detector
 PRICE_KEYS = ("price", "p", "px")
 AMOUNT_KEYS = ("amount", "qty", "quantity", "size", "vol", "volume", "q", "v", "m", "sz")
 
@@ -97,8 +97,6 @@ class Stream:
         self.book_status = ""  # "" | live | polling | error | none
         self.book_error = ""
         self._book_at = 0.0
-        # Raw trades before fill merging (recorder); (stream, trades, live)
-        self.on_raw: TradesCallback | None = None
         # health: delay, reconnects, detected gaps and trades restored over REST
         self.latency = Latency()
         self.last_msg = 0.0
@@ -160,8 +158,6 @@ class Stream:
             self._tick_price, self._tick_side = t.price, t.side
             if live:
                 self.latency.add(now, (t.ts_local - t.ts) * 1000)
-        if self.on_raw and trades:
-            self.on_raw(self, trades, live)
 
     def emit_seed(self, trades: list[Trade], drop_replays: bool = True) -> None:
         """Emit REST history (stats only, not the tape).
@@ -209,8 +205,16 @@ class Stream:
         """Order book next to the trades: its failures never touch the trade stream."""
         backoff = 2.0
         while True:
+            while not self.books_on():
+                self.book_status = ""
+                await asyncio.sleep(1)
+            task = asyncio.create_task(self.book_loop())
             try:
-                await self.book_loop()
+                while not task.done() and self.books_on():
+                    await asyncio.wait({task}, timeout=1)
+                if not self.books_on():
+                    continue
+                await task
                 if self.book_status == "none":
                     return
                 backoff = 2.0
@@ -220,6 +224,9 @@ class Stream:
                 self.book_status = "error"
                 self.book_error = f"{type(e).__name__}: {e}"[:200]
                 log.info("%s book error: %s", self.key, self.book_error)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
 
@@ -271,6 +278,7 @@ class Stream:
         finally:
             if book_task:
                 book_task.cancel()
+                await asyncio.gather(book_task, return_exceptions=True)
 
     def info(self) -> dict:
         return {

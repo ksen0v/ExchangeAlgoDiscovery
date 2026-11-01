@@ -21,7 +21,6 @@ class Feed(QObject):
     walls = Signal(list)  # order-book wall events
     snapshot = Signal(dict)
     alert = Signal(dict)
-    regime = Signal(dict)  # market regime badge of the main coin (М3)
     coin_changed = Signal(str)
     watch_changed = Signal(list)  # extra coins on the server
     connection = Signal(bool, str)  # connected, error text
@@ -129,8 +128,6 @@ class Feed(QObject):
             self.snapshot.emit(msg)
         elif kind == "alert":
             self.alert.emit(msg.get("alert") or {})
-        elif kind == "regime":
-            self.regime.emit(msg)
         elif kind == "watch":
             self.watch_changed.emit(msg.get("coins") or [])
         elif kind == "coin":

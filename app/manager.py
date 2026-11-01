@@ -21,7 +21,7 @@ from app.repeats import RepeatTracker
 log = logging.getLogger(__name__)
 
 MAX_WATCH = 2  # extra coins next to the main one: three in total
-WALL_LEVELS = 50  # book levels the wall detector looks at (analysis modules get the whole book)
+WALL_LEVELS = 50  # near-price levels used by the wall detector
 
 
 def trade_row(coin: str, key: str, t: Trade, rep: tuple[int, int] | None) -> dict:
@@ -46,22 +46,24 @@ class Tape:
     def __init__(self, coin: str) -> None:
         self.coin = coin
         self.streams: dict[str, Stream] = {}
-        self.tasks: list[asyncio.Task] = []
+        self.tasks: dict[str, asyncio.Task] = {}
         self.repeats = RepeatTracker()
         self.last: dict[str, tuple[float, float]] = {}  # key -> (ts, price) of the latest trade
 
 
 class Manager:
-    def __init__(self, detector: Detector, hub: Hub, session: aiohttp.ClientSession, analytics=None, recorder=None):
+    def __init__(self, detector: Detector, hub: Hub, session: aiohttp.ClientSession, analytics=None, venue_selection=None):
         self.detector = detector
-        self.analytics = analytics  # app.analytics.engine.Analytics: М1-М4 of the main coin
-        self.recorder = recorder  # app.analytics.recorder.Recorder: raw data on disk
+        self.analytics = analytics  # CVD, venue delta and OI of the main coin
+        known = {v.name for v in VENUES}
+        self.venue_selection = {str(c).upper(): [v for v in vs if v in known]
+                                for c, vs in (venue_selection or {}).items() if isinstance(vs, list)}
         self.hub = hub
         self.session = session
         self.pool = CcxtPool()
         self.coin = ""
         self.streams: dict[str, Stream] = {}
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: dict[str, asyncio.Task] = {}
         self._marked: set[str] = set()
         self._lock = asyncio.Lock()
         self.repeats = RepeatTracker()
@@ -76,18 +78,22 @@ class Manager:
     def on_trades(self, stream: Stream, trades: list[Trade], live: bool) -> None:
         kept = self.detector.ingest(stream.key, trades)
         if self.analytics:
-            self.analytics.on_trades(stream, kept)
+            self.analytics.on_trades(stream, kept, live=live)
+        floor = self.hub.trade_floor(self.coin, stream.key)
+        if floor == float("inf"):
+            return
         self._tune(self.repeats)
         rows = []
         for t in kept:
             rep = self.repeats.observe(stream.key, t)
-            if live:  # REST history only warms the stats
+            if live and t.usd >= floor:  # REST history only warms the stats
                 rows.append(trade_row(self.coin, stream.key, t, rep))
         if rows:
             self.hub.push_trades(rows)
 
     def on_watch_trades(self, tape: Tape, stream: Stream, trades: list[Trade], live: bool) -> None:
         now = time.time()
+        floor = self.hub.trade_floor(tape.coin, stream.key)
         self._tune(tape.repeats)
         rows = []
         for t in trades:
@@ -95,48 +101,49 @@ class Manager:
                 continue
             if t.ts > now + 2:
                 t.ts = now  # exchange clock ahead of ours
-            rep = tape.repeats.observe(stream.key, t)
             if t.ts >= tape.last.get(stream.key, (0.0, 0.0))[0]:
                 tape.last[stream.key] = (t.ts, t.price)
-            if live:
+            if live and t.usd >= floor:
+                rep = tape.repeats.observe(stream.key, t)
                 rows.append(trade_row(tape.coin, stream.key, t, rep))
         if rows:
             self.hub.push_trades(rows)
 
     def on_book(self, stream: Stream, ts: float, bids: list, asks: list) -> None:
         events = self.detector.ingest_book(stream.key, ts, bids[:WALL_LEVELS], asks[:WALL_LEVELS])
-        if self.analytics:
-            self.analytics.on_book(stream, ts, bids, asks)
         if events:
             self.hub.push_walls(events)
 
     # ---- lifecycle -------------------------------------------------------
-    def _launch(self, coin: str, on_trades, books: bool) -> tuple[dict[str, Stream], list[asyncio.Task]]:
+    def _launch(self, coin: str, on_trades, books: bool, only=None) -> tuple[dict, dict]:
         streams: dict[str, Stream] = {}
-        tasks: list[asyncio.Task] = []
+        tasks: dict[str, asyncio.Task] = {}
+        selected = self.venue_selection.get(coin)
         for venue in VENUES:
+            if (selected is not None and venue.name not in selected) or (only is not None and venue.name not in only):
+                continue
             for kind in ("spot", "perp"):
                 source = getattr(venue, kind)
                 if source is None:
                     continue
                 s = make_stream(venue.name, kind, source, coin, on_trades, self.pool, self.session)
-                if self.recorder:
-                    s.on_raw = self.recorder.trades
                 if books:
                     s.on_book = self.on_book
-                    s.books_on = self._books_on
+                    s.books_on = partial(self._books_on, s.key)
                 streams[s.key] = s
-                tasks.append(asyncio.create_task(s.run(), name=f"{coin}:{s.key}"))
+                tasks[s.key] = asyncio.create_task(s.run(), name=f"{coin}:{s.key}")
         return streams, tasks
 
-    def _books_on(self) -> bool:
-        return self.detector.cfg.walls or bool(self.analytics and self.analytics.wants_books())
+    def _books_on(self, key: str) -> bool:
+        return self.detector.cfg.walls and not self.detector.wall_override(key).get("off", False)
 
     @staticmethod
-    async def _halt(streams: dict[str, Stream], tasks: list[asyncio.Task]) -> None:
-        for t in tasks:
+    async def _halt(streams: dict[str, Stream], tasks: dict[str, asyncio.Task]) -> None:
+        for stream in streams.values():
+            stream.status = "stopping"
+        for t in tasks.values():
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
         await asyncio.gather(*(s.close() for s in streams.values()), return_exceptions=True)
 
     async def set_coin(self, coin: str) -> None:
@@ -145,7 +152,11 @@ class Manager:
             if coin in self.watch:  # a watched coin becomes the main one
                 tape = self.watch.pop(coin)
                 await self._halt(tape.streams, tape.tasks)
+            if self.analytics:
+                self.analytics.shutdown()
             await self._halt(self.streams, self._tasks)
+            self.hub._tape.clear()
+            self.hub._walls.clear()
             self.coin = self.hub.primary = coin
             self.detector.reset(coin)
             if self.analytics:
@@ -178,6 +189,46 @@ class Manager:
             self.watch = {c: self.watch[c] for c in wanted if c in self.watch}
         return list(self.watch)
 
+    async def set_venues(self, coin: str, venues: list[str] | None) -> None:
+        """Apply only the connection difference; keep all other streams running."""
+        async with self._lock:
+            if venues is None:
+                self.venue_selection.pop(coin, None)
+            else:
+                self.venue_selection[coin] = sorted(set(venues))
+            selected = set(venues) if venues is not None else {v.name for v in VENUES}
+            if coin == self.coin:
+                streams, tasks, repeats = self.streams, self._tasks, self.repeats
+                callback, books = self.on_trades, True
+            elif coin in self.watch:
+                tape = self.watch[coin]
+                streams, tasks, repeats = tape.streams, tape.tasks, tape.repeats
+                callback, books = partial(self.on_watch_trades, tape), False
+            else:
+                return  # saved for the next time this coin is monitored
+            removed = {k: st for k, st in streams.items() if st.venue not in selected}
+            if coin == self.coin and self.analytics:
+                for key in removed:
+                    self.analytics.drop_stream(key)
+            removed_tasks = {k: tasks.pop(k) for k in removed}
+            for key in removed:
+                streams.pop(key)
+                if coin == self.coin:
+                    self.detector.states.pop(key, None)
+                    self.detector.walls.forget(key)
+                    self._marked.discard(key)
+                else:
+                    tape.last.pop(key, None)
+            await self._halt(removed, removed_tasks)
+            repeats.reset()
+            present = {st.venue for st in streams.values()}
+            added, new_tasks = self._launch(coin, callback, books, only=selected - present)
+            streams.update(added)
+            tasks.update(new_tasks)
+            self.hub._tape = [r for r in self.hub._tape if r.get("coin") != coin or r["key"] not in removed]
+            if coin == self.coin:
+                self.hub._walls = [e for e in self.hub._walls if e["key"] not in removed]
+
     async def shutdown(self) -> None:
         async with self._lock:
             for tape in self.watch.values():
@@ -186,7 +237,7 @@ class Manager:
             if self.analytics:
                 self.analytics.shutdown()
             await self._halt(self.streams, self._tasks)
-            self.streams, self._tasks = {}, []
+            self.streams, self._tasks = {}, {}
             await self.pool.reset()
 
     # ---- state -----------------------------------------------------------

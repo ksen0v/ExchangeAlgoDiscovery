@@ -33,21 +33,10 @@ class Settings(BaseSettings):
     timezone: str = ""
     # Simulated exchanges instead of real ones: to try the app without network access.
     demo: bool = False
-    # Module settings (thresholds, windows, on/off), YAML, re-read on change.
-    # Empty = radar.yaml next to the database.
-    config_path: str = ""
-    # М6: Binance margin inventory / borrow rates need a READ-ONLY key (no trading, no withdrawals,
-    # IP whitelist). A key with trading or withdrawal rights is refused, see app/analytics/borrow.py.
-    binance_api_key: str = ""
-    binance_api_secret: str = ""
-
     @property
     def data_dir(self) -> Path:
         return Path(self.db_path).resolve().parent
 
-    @property
-    def modules_config(self) -> Path:
-        return Path(self.config_path) if self.config_path else self.data_dir / "radar.yaml"
 
 
 settings = Settings()
