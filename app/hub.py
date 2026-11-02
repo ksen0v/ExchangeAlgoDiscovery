@@ -6,6 +6,7 @@ disconnected (it reconnects and starts fresh).
 """
 import asyncio
 import logging
+import math
 
 import orjson
 from fastapi import WebSocket
@@ -22,6 +23,8 @@ class Client:
     def __init__(self, ws: WebSocket):
         self.ws = ws
         self.min_usd = 3000.0
+        self.min_by_key: dict[str, float] = {}
+        self.tape = True
         self.keys: frozenset[str] | None = None  # None = every stream
         self.lite = False  # snapshots without per-stream metrics (the overlay needs only statuses)
         self.walls = True  # order-book wall events
@@ -32,7 +35,21 @@ class Client:
 
     def set_filter(self, msg: dict) -> None:
         if "min_usd" in msg:
-            self.min_usd = max(0.0, float(msg["min_usd"] or 0))
+            value = float(msg["min_usd"] or 0)
+            if math.isfinite(value):
+                self.min_usd = max(0.0, value)
+        if "min_by_key" in msg and isinstance(msg["min_by_key"], dict):
+            thresholds = {}
+            for key, raw in list(msg["min_by_key"].items())[:300]:
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(key, str) and math.isfinite(value) and 0 <= value <= 1e12:
+                    thresholds[key] = value
+            self.min_by_key = thresholds
+        if "tape" in msg:
+            self.tape = bool(msg["tape"])
         if "keys" in msg:
             keys = msg["keys"]
             self.keys = frozenset(str(k) for k in keys) if isinstance(keys, list) and keys else None
@@ -50,10 +67,13 @@ class Client:
 
     def wants(self, row: dict, primary: str = "") -> bool:
         return (
-            row["usd"] >= self.min_usd
+            self.tape and row["usd"] >= self.threshold(row["key"])
             and (self.keys is None or row["key"] in self.keys)
             and self.follows(row.get("coin") or primary, primary)
         )
+
+    def threshold(self, key: str) -> float:
+        return self.min_by_key.get(key, self.min_usd)
 
     def wants_wall(self, event: dict, primary: str = "") -> bool:
         # walls are analysed for the main coin only
@@ -87,7 +107,7 @@ class Hub:
 
     def trade_floor(self, coin: str, key: str) -> float:
         """Avoid allocating tape rows that no subscribed client will receive."""
-        return min((c.min_usd for c in self.clients if c.follows(coin, self.primary)
+        return min((c.threshold(key) for c in self.clients if c.tape and c.follows(coin, self.primary)
                     and (c.keys is None or key in c.keys)), default=float("inf"))
 
     def broadcast(self, msg: dict) -> None:

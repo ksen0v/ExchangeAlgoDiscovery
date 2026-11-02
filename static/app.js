@@ -7,6 +7,19 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
+let theme = new URLSearchParams(location.search).get("theme") || store.get("theme", "dark");
+function applyTheme(value, notify = false) {
+  theme = value === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  store.set("theme", theme);
+  $("themeBtn").textContent = theme === "dark" ? "Светлая тема" : "Тёмная тема";
+  document.dispatchEvent(new Event("radar-theme"));
+  if (window.A) rebuildTape();
+  if (notify && window.radarDesktop) window.radarDesktop.setTheme(theme);
+}
+window.applyTheme = applyTheme;
+applyTheme(theme);
+$("themeBtn").addEventListener("click", () => applyTheme(theme === "dark" ? "light" : "dark", true));
 const fmtPrice = (p) => (p == null ? "—" : p.toLocaleString("en-US", { maximumSignificantDigits: 6 }));
 function fmtUsd(v) {
   if (v == null) return "—";
@@ -22,11 +35,6 @@ function fmtQty(v) {
   if (a >= 1e4) return (v / 1e3).toFixed(1) + "k";
   return v.toLocaleString("en-US", { maximumSignificantDigits: 5 });
 }
-function fmtBps(v, cls = true) {
-  if (v == null) return '<span class="dim">—</span>';
-  const s = (v > 0 ? "+" : "") + v.toFixed(0);
-  return cls ? `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${s}</span>` : s;
-}
 const fmtTime = (ts, ms = false) => {
   const d = new Date(ts * 1000);
   const t = d.toLocaleTimeString("ru-RU", { hour12: false });
@@ -35,6 +43,7 @@ const fmtTime = (ts, ms = false) => {
 const splitKey = (key) => { const i = key.lastIndexOf(":"); return [key.slice(0, i), key.slice(i + 1)]; };
 // Colours of repeated-size groups (one algorithm = one colour); same list as the desktop overlay.
 const REP_COLORS = ["#f0b90b", "#8fb3ff", "#c38fff", "#4fd1d9", "#ff9f43", "#ff7eb6", "#b5e853", "#e6edf3"];
+const REP_LIGHT = ["#987000", "#3158bd", "#8345b0", "#14739c", "#b35900", "#ad3475", "#4d7510", "#444444"];
 const kindBadge = (kind) => `<span class="kind ${kind}">${kind === "perp" ? "perp" : "spot"}</span>`;
 function toast(msg) {
   const el = $("toast");
@@ -61,6 +70,7 @@ const S = {
   streams: [],
   selected: new Set(store.get("selected", [])),
   minUsd: store.get("minUsd", 3000),
+  tapeMinByCoin: store.get("tapeMinByCoin", {}),
   side: "all",
   paused: false,
   sound: store.get("sound", true),
@@ -75,24 +85,6 @@ const TAPE_KEEP = 2000;
 const TAPE_DOM = 400;
 
 // ---------- streams table ----------
-function sparkSvg(spark) {
-  const W = 92, H = 26, mid = H / 2, bw = 2, gap = 1;
-  const max = Math.max(1, ...spark.map(([b, s]) => Math.max(b, s)));
-  let bars = `<line x1="0" x2="${W}" y1="${mid}" y2="${mid}" stroke="#2a323d" stroke-width="1"/>`;
-  spark.forEach(([b, s], i) => {
-    const x = i * (bw + gap) + 1;
-    const hb = b ? Math.max(1, (b / max) * (mid - 1)) : 0;
-    const hs = s ? Math.max(1, (s / max) * (mid - 1)) : 0;
-    const secs = (spark.length - i) * 10;
-    bars += `<g><title>−${secs}с: покупки ${fmtUsd(b)}, продажи ${fmtUsd(s)}</title>`
-      + `<rect x="${x - 0.5}" y="0" width="${bw + gap}" height="${H}" fill="transparent"/>`
-      + (hb ? `<rect x="${x}" y="${mid - hb}" width="${bw}" height="${hb}" rx="0.5" fill="var(--buy)"/>` : "")
-      + (hs ? `<rect x="${x}" y="${mid}" width="${bw}" height="${hs}" rx="0.5" fill="var(--sell)"/>` : "")
-      + "</g>";
-  });
-  return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Объём за 5 минут">${bars}</svg>`;
-}
-
 function wallCell(s) {
   const o = s.wall_override;
   const gear = o ? ` <span class="gear" title="Свои настройки плит для этой биржи">⚙</span>` : "";
@@ -146,13 +138,12 @@ $("wallForm").addEventListener("submit", async (e) => {
   }
 });
 
-// М12: venue quality 0..1; below the threshold the venue is left out of the delta / regime sums
 function isActive(s) {
   return (s.status === "live" || s.status === "polling") && s.price != null;
 }
 
 function renderStreams() {
-  if (document.hidden || (window.A && A.view !== "tape")) return;
+  if (document.hidden || (window.A && A.view !== "dashboard")) return;
   const cfg = S.config;
   const active = S.streams.filter(isActive).filter((s) => !S.hideQuiet || s.vol_w > 0);
   active.sort((a, b) => (b.score - a.score) || (b.vol_w - a.vol_w));
@@ -161,39 +152,27 @@ function renderStreams() {
     const hot = s.score >= cfg.alert_score;
     const warm = !hot && s.score >= cfg.alert_score / 2;
     const cls = [hot ? "hot" : warm ? "warm" : "", S.selected.has(s.key) ? "selected" : ""].join(" ");
-    const ratio = s.warming ? '<span class="warming" title="Копится история для базы">прогрев</span>'
-      : s.ratio == null ? "—" : `<span class="${s.ratio >= cfg.spike_ratio ? "flag" : ""}">×${s.ratio >= 100 ? s.ratio.toFixed(0) : s.ratio.toFixed(1)}</span>`;
-    const bs = s.buy_share;
-    const buy = bs == null ? '<span class="dim">—</span>'
-      : `<span class="buybar"><i style="width:${(bs * 100).toFixed(0)}%"></i></span>${(bs * 100).toFixed(0)}%`;
     const algo = s.algo
       ? `<span class="${s.algo.side === "buy" ? "pos" : "neg"}" title="${s.algo.count} сделок ≈${fmtUsd(s.algo.avg_usd)}${s.algo.regular ? `, шаг ~${s.algo.interval.toFixed(1)}с` : ""}">${s.algo.count}×${fmtUsd(s.algo.avg_usd)}${s.algo.regular ? " ⏱" : ""}</span>`
       : '<span class="dim">—</span>';
-    const share = s.share == null ? "—" : (s.share * 100).toFixed(s.share < 0.1 ? 1 : 0) + "%";
     const wall = wallCell(s);
     const stale = s.age != null && s.age > 60 ? ` <span class="dim" title="Последняя сделка ${Math.round(s.age)}с назад">·</span>` : "";
     let html = `<tr class="${cls}" data-key="${esc(s.key)}">
       <td class="venue">${esc(venue)}${kindBadge(s.kind)}${s.side_source === "price_tick_fallback" ? ' <span class="muted" title="Сторона Alpha оценивается по изменению цены, если API не передаёт её явно">≈</span>' : ""}</td>
       <td class="r">${fmtPrice(s.price)}${stale}</td>
-      <td class="r">${fmtBps(s.ret_bps)}</td>
-      <td class="r">${fmtBps(s.dev_bps)}</td>
       <td class="r">${fmtUsd(s.vol_w)}</td>
-      <td class="r">${ratio}</td>
-      <td class="r">${buy}</td>
       <td>${algo}</td>
       <td class="wallcell">${wall}</td>
-      <td class="r">${share}</td>
       <td class="r score"><b>${s.score.toFixed(0)}</b></td>
-      <td>${sparkSvg(s.spark || [])}</td>
     </tr>`;
     if ((hot || warm) && s.reasons && s.reasons.length) {
-      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="12">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
+      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="6">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
     }
     return html;
   });
   const noVenues = S.venueSelection[S.coin]?.length === 0;
   $("venuesBtn").textContent = `Биржи: ${S.venueSelection[S.coin]?.length ?? S.venues.length}/${S.venues.length}`;
-  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="12" class="empty">${noVenues ? "Все биржи отключены. Выберите их в «Биржи монеты»." : "Подключаемся к биржам…"}</td></tr>`;
+  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="6" class="empty">${noVenues ? "Все биржи отключены. Выберите их в «Биржи монеты»." : "Подключаемся к биржам…"}</td></tr>`;
 
   const inactive = S.streams.filter((s) => !isActive(s));
   const label = { na: "нет пары", noapi: "нет публичного API", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
@@ -238,11 +217,14 @@ function toggleSelected(key, only = false) {
   renderChips();
   rebuildTape();
   renderStreams();
+  sendFilter();
 }
 
 // ---------- tape ----------
+function tapeThresholds() { return S.tapeMinByCoin?.[S.coin] || {}; }
+function tapeThreshold(key) { return tapeThresholds()[key] ?? S.minUsd; }
 function tapeVisible(r) {
-  if (r.usd < S.minUsd) return false;
+  if (r.usd < tapeThreshold(r.key)) return false;
   if (S.side !== "all" && r.side !== S.side) return false;
   if (S.selected.size && !S.selected.has(r.key)) return false;
   return true;
@@ -250,10 +232,11 @@ function tapeVisible(r) {
 
 function tapeRowHtml(r) {
   const [venue, kind] = splitKey(r.key);
-  const pct = Math.min(100, (r.usd / (S.minUsd * 10 || 1)) * 100);
-  const big = r.usd >= S.minUsd * 5 ? " big" : "";
+  const floor = Math.max(1, tapeThreshold(r.key));
+  const pct = Math.min(100, (r.usd / (floor * 10)) * 100);
+  const big = r.usd >= floor * 5 ? " big" : "";
   const fills = r.fills > 1 ? ` <span class="fills" title="Склеено исполнений одного ордера">×${r.fills}</span>` : "";
-  const color = r.rep ? REP_COLORS[r.grp % REP_COLORS.length] : "";
+  const color = r.rep ? (theme === "light" ? REP_LIGHT : REP_COLORS)[r.grp % REP_COLORS.length] : "";
   const rep = r.rep ? `<i class="rep" title="${r.rep}-й ордер такого же размера и стороны за минуту — похоже на алгоритм">×${r.rep}</i>` : "";
   return `<div class="tape-row ${r.side === "buy" ? "buy" : r.side === "sell" ? "sell" : ""}${big}${r.rep ? " repeat" : ""}"${color ? ` style="--rep:${color}"` : ""}>`
     + `<div class="bg" style="width:${pct.toFixed(1)}%"></div>`
@@ -268,7 +251,7 @@ function tapeRowHtml(r) {
 function addTrades(rows) {
   // rows arrive oldest -> newest
   S.tape = rows.slice().reverse().concat(S.tape).slice(0, TAPE_KEEP);
-  if (S.paused || document.hidden || (window.A && A.view !== "tape")) return;
+  if (S.paused || document.hidden || (window.A && A.view !== "dashboard")) return;
   const vis = rows.filter(tapeVisible);
   if (!vis.length) return;
   const list = $("tapeList");
@@ -281,7 +264,7 @@ function addTrades(rows) {
 function rebuildTape() {
   const vis = S.tape.filter(tapeVisible).slice(0, TAPE_DOM);
   $("tapeList").innerHTML = vis.map(tapeRowHtml).join("")
-    || `<div class="empty">Нет принтов от ${fmtUsd(S.minUsd)}${S.selected.size ? " на выбранных биржах" : ""}. Ждём…</div>`;
+    || `<div class="empty">Ждём сделки по фильтрам ленты${S.selected.size ? " на выбранных биржах" : ""}.</div>`;
 }
 
 function renderChips() {
@@ -303,6 +286,39 @@ $("minUsd").addEventListener("change", () => {
   rebuildTape();
 });
 $("sideFilter").addEventListener("change", () => { S.side = $("sideFilter").value; rebuildTape(); });
+let tapeSizeCoin = "";
+$("tapeSizeBtn").addEventListener("click", () => {
+  tapeSizeCoin = S.coin;
+  $("tapeSizeTitle").textContent = `Размер сделок · ${S.coin}`;
+  const chosen = S.venueSelection[S.coin];
+  const thresholds = tapeThresholds();
+  $("tapeSizeBody").innerHTML = S.venues.filter(v => !chosen || chosen.includes(v.name)).map(v => `<tr data-venue="${esc(v.name.toLowerCase())}"><td>${esc(v.name)}</td>${["spot", "perp"].map(kind => {
+    const key = `${v.name}:${kind}`;
+    return `<td>${v[kind] ? `<input type="number" min="0" max="1000000000000" step="any" data-key="${esc(key)}" placeholder="${S.minUsd}" value="${thresholds[key] ?? ""}" aria-label="${esc(v.name)} ${kind}, USD">` : "—"}</td>`;
+  }).join("")}</tr>`).join("");
+  $("tapeSizeSearch").value = "";
+  $("tapeSizeDlg").showModal();
+});
+$("tapeSizeSearch").addEventListener("input", () => {
+  const q = $("tapeSizeSearch").value.toLowerCase();
+  $("tapeSizeBody").querySelectorAll("tr").forEach(row => row.hidden = !row.dataset.venue.includes(q));
+});
+$("tapeSizeSearch").addEventListener("keydown", e => { if (e.key === "Enter") e.preventDefault(); });
+$("tapeSizeReset").addEventListener("click", () => $("tapeSizeBody").querySelectorAll("input").forEach(input => input.value = ""));
+$("tapeSizeCancel").addEventListener("click", () => $("tapeSizeDlg").close());
+$("tapeSizeForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if (tapeSizeCoin !== S.coin) { $("tapeSizeDlg").close(); toast("Монета изменилась. Открой фильтры заново"); return; }
+  const values = {...tapeThresholds()};
+  for (const input of $("tapeSizeBody").querySelectorAll("input")) {
+    if (input.value === "") delete values[input.dataset.key];
+    else values[input.dataset.key] = Number(input.value);
+  }
+  S.tapeMinByCoin = {...S.tapeMinByCoin, [S.coin]: values};
+  store.set("tapeMinByCoin", S.tapeMinByCoin);
+  $("tapeSizeDlg").close(); sendFilter(); rebuildTape();
+  toast("Фильтры сохранены. Новые пороги применяются к входящим сделкам");
+});
 $("pauseBtn").addEventListener("click", () => {
   S.paused = !S.paused;
   $("pauseBtn").textContent = S.paused ? "▶ Продолжить" : "⏸ Пауза";
@@ -428,6 +444,7 @@ function setCoin(coin) {
   store.set("selected", []);
   renderChips();
   rebuildTape();
+  sendFilter();
   loadAlerts();
   loadWalls();
 }
@@ -561,9 +578,9 @@ $("tgTest").addEventListener("click", async () => {
 
 // ---------- websocket ----------
 function sendFilter() {
-  const analytics = !document.hidden && !!(window.A && A.view === "analysis");
-  const lite = document.hidden || !!(window.A && A.view !== "tape");
-  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "filter", min_usd: S.minUsd, analytics, lite }));
+  const visible = !document.hidden && (!window.A || A.view === "dashboard");
+  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type:"filter", min_usd:S.minUsd,
+    min_by_key:tapeThresholds(), keys:[...S.selected], tape:visible, walls:visible, analytics:visible, lite:!visible }));
 }
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -592,7 +609,7 @@ function connect() {
     } else if (msg.type === "venues") {
       if (msg.venues === null) delete S.venueSelection[msg.coin];
       else S.venueSelection[msg.coin] = msg.venues;
-      if (msg.coin === S.coin) { S.selected.clear(); renderChips(); rebuildTape(); }
+      if (msg.coin === S.coin) { S.selected.clear(); renderChips(); rebuildTape(); sendFilter(); }
     }
   };
 }

@@ -1,6 +1,7 @@
 """Desktop preferences: one JSON file in the user's app-data folder."""
 import json
 import logging
+import math
 import os
 import sys
 from dataclasses import asdict, dataclass, field, fields
@@ -29,6 +30,7 @@ def data_dir() -> Path:
 class OverlayPrefs:
     keys: list[str] = field(default_factory=list)  # "KuCoin:spot"...; empty = every venue
     min_usd: float = 1000.0
+    min_by_key: dict[str, float] = field(default_factory=dict)
     side: str = "all"  # all | buy | sell
     only_repeats: bool = False  # show only prints of repeating-size series (algorithms)
     highlight_repeats: bool = True
@@ -41,6 +43,12 @@ class OverlayPrefs:
     show_qty: bool = False
     big_mult: float = 5.0  # prints >= min_usd * big_mult are bold
     max_rows: int = 300
+
+    def threshold(self, key: str) -> float:
+        value = self.min_by_key.get(key, self.min_usd)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            return self.min_usd
+        return value
 
 
 @dataclass
@@ -70,6 +78,8 @@ class Prefs:
     overlay_locked: bool = False
     overlay_geometry: str = ""
     main_geometry: str = ""
+    theme: str = "dark"
+    metric_overlays: dict = field(default_factory=dict)
     hotkey_overlay: str = "ctrl+alt+t"
     hotkey_lock: str = "ctrl+alt+l"
     overlay: OverlayPrefs = field(default_factory=OverlayPrefs)

@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, Q
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizeGrip, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from desktop.prefs import OverlayPrefs
+from desktop.theme import THEMES
 
 # Same palette as static/app.js: one colour per repeating-size series.
 REP_COLORS = ["#f0b90b", "#8fb3ff", "#c38fff", "#4fd1d9", "#ff9f43", "#ff7eb6", "#b5e853", "#e6edf3"]
@@ -27,8 +28,20 @@ MUTED = QColor("#7d8793")
 ACCENT = QColor("#f0b90b")
 PERP = QColor("#8fb3ff")
 BG = (13, 17, 23)
+PANEL = (16, 16, 16)
+FRAME = QColor("#292929")
 MONO = ["Cascadia Mono", "Consolas", "JetBrains Mono", "DejaVu Sans Mono", "Menlo", "Courier New"]
 FLOW_SEC = 60
+
+
+def set_theme(theme: str) -> None:
+    global BUY, SELL, TEXT, TEXT_2, MUTED, ACCENT, PERP, BG, PANEL, FRAME, REP_COLORS
+    c = THEMES.get(theme, THEMES["dark"])
+    BUY, SELL, TEXT, TEXT_2, MUTED, ACCENT, PERP, FRAME = (QColor(c[k]) for k in
+        ("buy", "sell", "text", "text2", "muted", "accent", "perp", "line"))
+    BG, PANEL = QColor(c["bg"]).getRgb()[:3], QColor(c["panel"]).getRgb()[:3]
+    REP_COLORS = (["#987000", "#3158bd", "#8345b0", "#14739c", "#b35900", "#ad3475", "#4d7510", "#444444"]
+                  if theme == "light" else ["#e8bd55", "#99b2ff", "#ba99ea", "#65b8df", "#eeaa66", "#e697be", "#add06c", "#dddddd"])
 def fmt_usd(v: float) -> str:
     a = abs(v)
     if a >= 1e6:
@@ -194,8 +207,6 @@ class TapeView(QWidget):
         width = self.width()
         cols = self._columns(width)
         shadow = prefs.opacity < 0.6
-        min_usd = max(prefs.min_usd, 1.0)
-        big_usd = min_usd * max(prefs.big_mult, 1.0)
         y = 0
 
         def text(col: tuple[int, int], s: str, color: QColor, align=Qt.AlignmentFlag.AlignRight, font=None):
@@ -215,6 +226,8 @@ class TapeView(QWidget):
                 y += lh
                 continue
             side = BUY if r.side == "buy" else SELL if r.side == "sell" else MUTED
+            min_usd = max(prefs.threshold(f"{r.venue}:{r.kind}"), 1.0)
+            big_usd = min_usd * max(prefs.big_mult, 1.0)
             big = r.usd >= big_usd
             bar = QColor(side)
             bar.setAlpha(70 if big else 38)
@@ -309,6 +322,13 @@ class Header(QWidget):
         if e.button() == Qt.MouseButton.LeftButton and self.window().windowHandle():
             self.window().windowHandle().startSystemMove()
 
+    def apply_theme(self) -> None:
+        self.coin.setStyleSheet(f"color:{ACCENT.name()};font-weight:700;")
+        self.info.setStyleSheet(f"color:{MUTED.name()};")
+        for button in self.buttons:
+            button.setStyleSheet(f"QToolButton{{color:{TEXT_2.name()};border:0;padding:0 4px;background:transparent;}}"
+                                f"QToolButton:hover{{color:{TEXT.name()};background:{FRAME.name()};border-radius:4px;}}")
+
 
 class OverlayWindow(QWidget):
     settings_requested = Signal()
@@ -355,8 +375,15 @@ class OverlayWindow(QWidget):
         self._flow_timer = QTimer(self, interval=1000, timeout=self._update_flow)
         self._flow_timer.start()
         self.apply_prefs()
+        self.apply_theme()
 
     # ---- state -----------------------------------------------------------
+    def apply_theme(self) -> None:
+        self.header.apply_theme()
+        self._update_flow()
+        self.tape.update()
+        self.update()
+
     def set_prefs(self, prefs: OverlayPrefs) -> None:
         self.prefs = self.tape.prefs = prefs
         self.tape.rows = deque(filter(self.accepts, self.tape.rows), maxlen=prefs.max_rows)
@@ -418,7 +445,7 @@ class OverlayWindow(QWidget):
         if isinstance(r, WallRow):
             return pr.show_walls and r.usd >= pr.wall_min_usd and (
                 not pr.keys or f"{r.venue}:{r.kind}" in pr.keys)
-        if r.usd < pr.min_usd:
+        if r.usd < pr.threshold(f"{r.venue}:{r.kind}"):
             return False
         if pr.keys and f"{r.venue}:{r.kind}" not in pr.keys:
             return False
@@ -459,6 +486,8 @@ class OverlayWindow(QWidget):
             where = ", ".join(names[:4]) + (f" +{len(names) - 4}" if len(names) > 4 else "")
         extra = " · только повторы" if pr.only_repeats else ""
         extra += {"buy": " · покупки", "sell": " · продажи"}.get(pr.side, "")
+        if pr.min_by_key:
+            extra += f" · своих порогов: {len(pr.min_by_key)}"
         self.header.info.setText(f"от {fmt_usd(pr.min_usd)} · {where}{extra}")
         self.header.info.setToolTip(", ".join(pr.keys) or "Все биржи")
         if not self.connected:
@@ -481,9 +510,9 @@ class OverlayWindow(QWidget):
         p.fillPath(path, QColor(*BG, alpha))
         p.save()
         p.setClipPath(path)
-        p.fillRect(self.header.geometry(), QColor(27, 34, 44, min(255, alpha + 40)))
+        p.fillRect(self.header.geometry(), QColor(*PANEL, min(255, alpha + 40)))
         p.restore()
-        p.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        p.setPen(QPen(FRAME, 1))
         p.drawPath(path)
         if not self.locked:  # grip hint
             p.setPen(QPen(MUTED, 1))

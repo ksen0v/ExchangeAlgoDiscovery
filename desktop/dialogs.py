@@ -61,7 +61,8 @@ class OverlaySettingsDialog(QDialog):
             quick.addWidget(b)
         quick.addStretch(1)
         vb.addLayout(quick)
-        hint = QLabel("Ничего не выбрано — показываются все биржи.")
+        hint = QLabel("Ничего не выбрано — все биржи. Порог в USD: «Общий» (−1) — общий фильтр ленты.")
+        hint.setWordWrap(True)
         hint.setStyleSheet("color:#7d8793;")
         vb.addWidget(hint)
 
@@ -69,9 +70,10 @@ class OverlaySettingsDialog(QDialog):
         grid = QGridLayout(grid_host)
         grid.setHorizontalSpacing(14)
         grid.addWidget(QLabel("<b>Биржа</b>"), 0, 0)
-        grid.addWidget(QLabel("<b>Спот</b>"), 0, 1)
-        grid.addWidget(QLabel("<b>Фьючерс</b>"), 0, 2)
+        grid.addWidget(QLabel("<b>Спот · минимум $</b>"), 0, 1)
+        grid.addWidget(QLabel("<b>Фьючерсы · минимум $</b>"), 0, 2)
         self.boxes: dict[str, QCheckBox] = {}
+        self.threshold_inputs: dict[str, QDoubleSpinBox] = {}
         selected = set(self.prefs.keys)
         for row, v in enumerate(VENUES, start=1):
             grid.addWidget(QLabel(v.name), row, 0)
@@ -85,7 +87,19 @@ class OverlaySettingsDialog(QDialog):
                     cb.setStyleSheet("color:#7d8793;")
                     cb.setToolTip(f"{coin} не торгуется на {v.name} ({kind})")
                 cb.toggled.connect(self._emit)
-                grid.addWidget(cb, row, col)
+                cell = QWidget()
+                cell_layout = QHBoxLayout(cell)
+                cell_layout.setContentsMargins(0, 0, 0, 0)
+                threshold = QDoubleSpinBox(minimum=-1, maximum=1e12, decimals=0, singleStep=500)
+                threshold.setSpecialValueText("Общий")
+                threshold.setToolTip(f"{v.name} {kind}: свой минимум сделки, USD; −1 — общий порог")
+                threshold.setValue(self.prefs.threshold(key) if key in self.prefs.min_by_key else -1)
+                threshold.setMinimumWidth(90)
+                threshold.valueChanged.connect(self._emit)
+                self.threshold_inputs[key] = threshold
+                cell_layout.addWidget(cb)
+                cell_layout.addWidget(threshold)
+                grid.addWidget(cell, row, col)
                 self.boxes[key] = cb
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -160,7 +174,7 @@ class OverlaySettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
-        self.resize(520, 720)
+        self.resize(660, 760)
 
     def _select(self, pred) -> None:
         for key, cb in self.boxes.items():
@@ -172,6 +186,7 @@ class OverlaySettingsDialog(QDialog):
     def _emit(self, *_args) -> None:
         p = self.prefs
         p.keys = [k for k, cb in self.boxes.items() if cb.isChecked()]
+        p.min_by_key = {k: spin.value() for k, spin in self.threshold_inputs.items() if spin.value() >= 0}
         p.min_usd = self.min_usd.value()
         p.side = self.side.currentData()
         p.only_repeats = self.only_repeats.isChecked()

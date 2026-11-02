@@ -64,6 +64,25 @@ def test_client_filter_message_parsing():
     assert c.wants({"usd": 1500, "key": "Z:perp"}) and not c.wants({"usd": 500, "key": "Z:perp"})
 
 
+def test_per_market_trade_thresholds_are_used_before_allocating_or_sending_rows():
+    from app.hub import Hub
+
+    h = Hub()
+    h.primary = "X"
+    c = h.add(None)
+    c.set_filter({"min_usd": 3000, "min_by_key":{"A:spot":500, "A:perp":10000}})
+    assert h.trade_floor("X", "A:spot") == 500
+    assert h.trade_floor("X", "A:perp") == 10000
+    assert c.wants({"key":"A:spot", "usd":600}, "X")
+    assert not c.wants({"key":"A:perp", "usd":6000}, "X")
+    assert h.trade_floor("X", "B:spot") == 3000
+    c.set_filter({"tape":False})
+    assert h.trade_floor("X", "A:spot") == float("inf")
+    assert not c.wants({"key":"A:spot", "usd":1e9}, "X")
+    c.set_filter({"min_by_key":{"A:spot":"NaN", "A:perp":-5, "B:spot":0}, "tape":True})
+    assert c.min_by_key == {"B:spot":0}
+
+
 def test_switching_coin_works(client):
     r = client.post("/api/coin", json={"coin": "demoy"})
     assert r.status_code == 200 and r.json() == {"coin": "DEMOY"}
