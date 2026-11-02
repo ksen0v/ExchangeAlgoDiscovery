@@ -183,7 +183,7 @@ def test_wall_text_starts_with_what_happened():
     assert wall_text(w).startswith("▼ СНЯЛИ $251k @65,000.0")
 
 
-def test_extra_coins_load_dedup_and_limit(tmp_path):
+def test_extra_coins_load_dedup_without_a_fixed_limit(tmp_path):
     path = tmp_path / "desktop.json"
     path.write_text(json.dumps({"extra": [
         {"coin": "pepe", "visible": False, "overlay": {"min_usd": 500, "keys": ["MEXC:spot"]}},

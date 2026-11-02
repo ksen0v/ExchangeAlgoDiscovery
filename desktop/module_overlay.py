@@ -16,6 +16,8 @@ def overlay_request(raw: str) -> dict:
     if len(raw) > 128 * 1024:
         raise ValueError("Слишком большие настройки модуля")
     value = json.loads(raw)
+    if not isinstance(value, dict) or not isinstance(value.get("coin"), str):
+        raise ValueError("Неверные настройки оверлея")
     coin = value["coin"].strip().upper()
     if not coin.isascii() or not coin.isalnum() or len(coin) > 20:
         raise ValueError("Неверный инструмент")

@@ -1019,6 +1019,8 @@ class Controller(QObject):
             self.prefs.module_overlays = {key: overlay.save() for key, overlay in self.module_overlays.items()}
         for slot in self.extra_slots:
             slot.extra.geometry = slot.geometry_hex()
+        if self.args.selftest:
+            return  # CI exercises real controls without rewriting existing desktop preferences.
         try:
             self.prefs.save(self.prefs_path)
         except OSError as e:

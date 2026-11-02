@@ -37,7 +37,8 @@ window.Desk = new (class WorkspaceDesk {
     this.observer=new ResizeObserver(()=>{if(!this.surface.clientWidth||!this.surface.clientHeight)return;this.bounds={w:this.surface.clientWidth,h:this.surface.clientHeight};this.cancelGesture();this.applyRects();});this.observer.observe(this.surface);
     window.addEventListener('pagehide',()=>{if(window.radarOverlay)return;this.cache();if(this.ready&&this.dirty)fetch('/api/workspaces',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.model),keepalive:true}).catch(()=>{});});
     window.addEventListener('online',()=>this.ready?this.flush():this.load());
-    document.addEventListener('radar-desktop-ready',()=>{this.overlayButtons();window.radarDesktop.overlayState(raw=>this.receiveOverlays(raw));window.radarDesktop.overlaysChanged.connect(raw=>this.receiveOverlays(raw));});
+    const desktopReady=()=>{this.overlayButtons();if(this.desktopConnected||!window.radarDesktop)return;this.desktopConnected=true;window.radarDesktop.overlayState(raw=>this.receiveOverlays(raw));window.radarDesktop.overlaysChanged.connect(raw=>this.receiveOverlays(raw));};
+    document.addEventListener('radar-desktop-ready',desktopReady);desktopReady();
     this.overlayButtons();this.mount();if(!window.radarOverlay)this.load();
     api('/api/version').then(info=>$('appVersion').textContent=info.version).catch(()=>{});
   }
