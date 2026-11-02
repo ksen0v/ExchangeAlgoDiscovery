@@ -748,7 +748,7 @@ class Controller(QObject):
             overlay.set_snapshot(self.main_slot.feed.last_analytics)
         self.main_slot.apply_filter()
 
-    def set_theme(self, theme: str) -> None:
+    def set_theme(self, theme: str, persist: bool = True) -> None:
         from desktop.overlay import set_theme
         self.prefs.theme = theme if theme in ("dark", "light") else "dark"
         self.app.setPalette(palette(self.prefs.theme))
@@ -758,7 +758,8 @@ class Controller(QObject):
         for overlay in self.metrics.values():
             overlay.apply_theme(self.prefs.theme)
         self.main.web.page().runJavaScript(f"window.applyTheme && window.applyTheme({json.dumps(self.prefs.theme)})")
-        self.save_prefs()
+        if persist:
+            self.save_prefs()
 
     def _set_locked(self, locked: bool) -> None:
         for slot in self.slots:
@@ -920,6 +921,11 @@ class Controller(QObject):
 
     # ---- self test (CI smoke test of the built .exe) ---------------------
     def selftest(self) -> None:
+        # CI's virtual display is small; render a full desktop workspace for the artifact.
+        self.main.resize(1560, 940)
+        QTimer.singleShot(300, self._selftest_inspect)
+
+    def _selftest_inspect(self) -> None:
         script = """JSON.stringify((() => {
           const before = oiChart.span;
           oiChart.zoom(.8, .5);
@@ -937,6 +943,9 @@ class Controller(QObject):
                   bridge: !!window.radarDesktop, interactive,
                   themes: light !== dark,
                   panels: document.querySelectorAll('.dashboard .panel').length,
+                  fits: Array.from(document.querySelectorAll('.dashboard .panel')).every(el => {
+                    const r=el.getBoundingClientRect(); return r.bottom <= innerHeight+1 && r.right <= innerWidth+1 && r.top >= 0 && r.left >= 0;
+                  }),
                   theme: document.documentElement.dataset.theme};
         })())"""
         self.main.web.page().runJavaScript(script, self._selftest_dashboard)
@@ -968,13 +977,23 @@ class Controller(QObject):
         }
         ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"] and not result["dashboard_errors"]
         ok = ok and all(v["trades"] > 0 for v in result["extra"].values())
-        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes")) and dashboard.get("panels") == 7
+        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits")) and dashboard.get("panels") == 7
         ok = ok and all(result["metric_data"].values())
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")
         log.info("selftest %s", result)
+        self._selftest_ok = ok
+        self.set_theme("light", persist=False)
+        QTimer.singleShot(300, self._selftest_light)
+
+    def _selftest_light(self) -> None:
+        out = data_dir()
+        self.main.grab().save(str(out / "selftest-main-light.png"))
+        self.main_slot.overlay.grab().save(str(out / "selftest-overlay-light.png"))
+        for kind, overlay in self.metrics.items():
+            overlay.grab().save(str(out / f"selftest-{kind}-light.png"))
         self._quitting = True
-        self.app.exit(0 if ok else 1)
+        self.app.exit(0 if self._selftest_ok else 1)
 
 
 def on_screen(rect: QRect) -> bool:
