@@ -100,6 +100,7 @@ class ModuleOverlay(QWidget):
     def closeEvent(self, event):
         self.record["geometry"] = self.saveGeometry().toHex().data().decode()
         self.record["visible"] = False
+        self.hide()
         if self.web is not None:
             # Closing releases the WS subscription, chart timers and the page, rather than hiding work.
             page = self.web.page()

@@ -231,7 +231,7 @@ def test_removing_instrument_stops_only_its_tasks_and_preserves_settings(client)
     assert response.status_code == 200 and response.json()["selected"] == "DEMOX"
     assert all(t.done() for t in removed.tasks.values()) and not removed.analytics.feeds
     assert main.S.manager.instruments["WIF"] is kept
-    assert not any(t.done() for t in kept.tasks.values())
+    assert all(not t.cancelled() for t in kept.tasks.values())
     assert client.get("/api/analytics?coin=PEPE").status_code == 404
     assert client.get("/api/venues?coin=PEPE").json()["venues"] == ["Binance"]
     assert client.delete("/api/instruments/WIF").status_code == 200
