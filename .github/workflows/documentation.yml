@@ -1,0 +1,29 @@
+name: documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "scripts/release_notes.py"
+      - "scripts/sync_release_notes.py"
+      - ".github/workflows/documentation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: documentation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-descriptions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish user-facing descriptions for existing releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m scripts.sync_release_notes
