@@ -13,7 +13,7 @@ import sys
 import time
 from urllib.parse import urlencode
 
-from PySide6.QtCore import QByteArray, QFile, QIODevice, QObject, QPoint, QRect, QRectF, Qt, QTimer, QUrl, Slot
+from PySide6.QtCore import QByteArray, QFile, QIODevice, QObject, QPoint, QRect, QRectF, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
@@ -97,6 +97,8 @@ def dark_palette() -> QPalette:
 
 
 class DashboardBridge(QObject):
+    themeChanged = Signal(str)
+
     def __init__(self, ctl, parent):
         super().__init__(parent)
         self.ctl = ctl
@@ -111,6 +113,10 @@ class DashboardBridge(QObject):
         if value in self.ctl.metric_actions:
             action = self.ctl.metric_actions[value]
             action.setChecked(not action.isChecked())
+
+    @Slot(result=str)
+    def currentTheme(self):
+        return self.ctl.prefs.theme
 
 
 class DashboardPage(QWebEnginePage):
@@ -133,7 +139,14 @@ class DashboardPage(QWebEnginePage):
         script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
         script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
         script.setRunsOnSubFrames(False)
-        script.setSourceCode(source + "\nnew QWebChannel(qt.webChannelTransport, function(c) { window.radarDesktop=c.objects.radarDesktop; document.dispatchEvent(new Event('radar-desktop-ready')); });")
+        script.setSourceCode(source + """
+new QWebChannel(qt.webChannelTransport, function(c) {
+  window.radarDesktop=c.objects.radarDesktop;
+  const apply = function(theme) { if (window.applyTheme) window.applyTheme(theme); };
+  window.radarDesktop.themeChanged.connect(apply);
+  window.radarDesktop.currentTheme(apply);
+  document.dispatchEvent(new Event('radar-desktop-ready'));
+});""")
         self.scripts().insert(script)
 
     def javaScriptConsoleMessage(self, level, message, line, source):
@@ -757,7 +770,7 @@ class Controller(QObject):
             slot.overlay.apply_theme()
         for overlay in self.metrics.values():
             overlay.apply_theme(self.prefs.theme)
-        self.main.web.page().runJavaScript(f"window.applyTheme && window.applyTheme({json.dumps(self.prefs.theme)})")
+        self.main.web.page().bridge.themeChanged.emit(self.prefs.theme)
         if persist:
             self.save_prefs()
 
@@ -988,9 +1001,24 @@ class Controller(QObject):
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")
         log.info("selftest %s", result)
+        self._selftest_result = result
         self._selftest_ok = ok
+        # Leave the JavaScript result callback before sending the native theme change.
+        QTimer.singleShot(0, self._selftest_switch_theme)
+
+    def _selftest_switch_theme(self) -> None:
         self.set_theme("light", persist=False)
-        QTimer.singleShot(300, self._selftest_light)
+        QTimer.singleShot(1000, lambda: self.main.web.page().runJavaScript(
+            "document.documentElement.dataset.theme", self._selftest_theme_ready))
+
+    def _selftest_theme_ready(self, theme) -> None:
+        self._selftest_result["native_theme_sync"] = theme == "light"
+        self._selftest_ok = self._selftest_ok and theme == "light"
+        self._selftest_result["ok"] = self._selftest_ok
+        (data_dir() / "selftest.json").write_text(json.dumps(self._selftest_result, indent=2), "utf-8")
+        log.info("selftest native theme sync: %s", theme)
+        # Give the compositor a frame after its DOM acknowledgement before grabbing the page.
+        QTimer.singleShot(700, self._selftest_light)
 
     def _selftest_light(self) -> None:
         out = data_dir()
