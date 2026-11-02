@@ -77,6 +77,7 @@ const S = {
   hideQuiet: store.get("hideQuiet", false),
   tab: store.get("tab", "alerts"),
   unseenWalls: 0,
+  alerts: [], walls: [], alertRequest: 0, wallRequest: 0,
   tape: [], // raw rows, newest first
   pending: [],
   ws: null,
@@ -143,96 +144,27 @@ function isActive(s) {
 }
 
 function renderStreams() {
-  if (document.hidden || (window.A && A.view !== "dashboard")) return;
-  const cfg = S.config;
-  const active = S.streams.filter(isActive).filter((s) => !S.hideQuiet || s.vol_w > 0);
-  active.sort((a, b) => (b.score - a.score) || (b.vol_w - a.vol_w));
-  const rows = active.map((s) => {
-    const [venue] = splitKey(s.key);
-    const hot = s.score >= cfg.alert_score;
-    const warm = !hot && s.score >= cfg.alert_score / 2;
-    const cls = [hot ? "hot" : warm ? "warm" : "", S.selected.has(s.key) ? "selected" : ""].join(" ");
-    const algo = s.algo
-      ? `<span class="${s.algo.side === "buy" ? "pos" : "neg"}" title="${s.algo.count} сделок ≈${fmtUsd(s.algo.avg_usd)}${s.algo.regular ? `, шаг ~${s.algo.interval.toFixed(1)}с` : ""}">${s.algo.count}×${fmtUsd(s.algo.avg_usd)}${s.algo.regular ? " ⏱" : ""}</span>`
-      : '<span class="dim">—</span>';
-    const wall = wallCell(s);
-    const stale = s.age != null && s.age > 60 ? ` <span class="dim" title="Последняя сделка ${Math.round(s.age)}с назад">·</span>` : "";
-    let html = `<tr class="${cls}" data-key="${esc(s.key)}">
-      <td class="venue">${esc(venue)}${kindBadge(s.kind)}${s.side_source === "price_tick_fallback" ? ' <span class="muted" title="Сторона Alpha оценивается по изменению цены, если API не передаёт её явно">≈</span>' : ""}</td>
-      <td class="r">${fmtPrice(s.price)}${stale}</td>
-      <td class="r">${fmtUsd(s.vol_w)}</td>
-      <td>${algo}</td>
-      <td class="wallcell">${wall}</td>
-      <td class="r score"><b>${s.score.toFixed(0)}</b></td>
-    </tr>`;
-    if ((hot || warm) && s.reasons && s.reasons.length) {
-      html += `<tr class="reasons-row" data-key="${esc(s.key)}"><td colspan="6">${s.reasons.map((r) => `<span>${esc(r)}</span>`).join("")}</td></tr>`;
-    }
-    return html;
-  });
-  const noVenues = S.venueSelection[S.coin]?.length === 0;
-  $("venuesBtn").textContent = `Биржи: ${S.venueSelection[S.coin]?.length ?? S.venues.length}/${S.venues.length}`;
-  $("streamsBody").innerHTML = rows.join("") || `<tr><td colspan="6" class="empty">${noVenues ? "Все биржи отключены. Выберите их в «Биржи монеты»." : "Подключаемся к биржам…"}</td></tr>`;
-
-  const inactive = S.streams.filter((s) => !isActive(s));
-  const label = { na: "нет пары", noapi: "нет публичного API", connecting: "подключение", init: "ожидание", error: "ошибка", live: "нет сделок", polling: "нет сделок" };
-  $("inactiveSummary").textContent = `Не торгуется / подключение / ошибки (${inactive.length})`;
-  $("inactiveList").innerHTML = inactive
-    .sort((a, b) => a.status.localeCompare(b.status) || a.key.localeCompare(b.key))
-    .map((s) => {
-      const [venue] = splitKey(s.key);
-      const err = s.error ? ` <span class="${s.status === "noapi" ? "muted" : "err"}" title="${esc(s.error)}">${s.status === "noapi" ? "ⓘ" : "⚠"}</span>` : "";
-      return `<div>${esc(venue)}${kindBadge(s.kind)} <span class="${s.status === "error" ? "err" : ""}">${label[s.status] || s.status}</span>${err}</div>`;
-    }).join("");
-
-  $("liveCount").textContent = `${active.length}/${S.streams.length}`;
-  $("windowHint").textContent = `окно ${cfg.window_sec}с · база ${Math.round(cfg.baseline_sec / 60)} мин`;
+  const active=S.streams.filter(isActive);
+  $('liveCount').textContent=active.length+'/'+S.streams.length;
+  $('venuesBtn').textContent='Биржи: '+(S.venueSelection[S.coin]?.length??S.venues.length)+'/'+S.venues.length;
+  window.Desk?.update('streams');
 }
 
-// The table is re-rendered every second: a "click" whose press and release land on two
-// different renders is never fired, so the wall settings open on the press itself.
-$("streamsBody").addEventListener("mousedown", (e) => {
-  const cell = e.button === 0 && e.target.closest("td.wallcell");
-  if (cell) {
-    e.preventDefault();
-    openWallDlg(cell.closest("tr[data-key]").dataset.key);
-  }
-});
-$("streamsBody").addEventListener("click", (e) => {
-  if (e.target.closest("td.wallcell")) return;
-  const tr = e.target.closest("tr[data-key]");
-  if (!tr) return;
-  toggleSelected(tr.dataset.key);
-});
-
-function toggleSelected(key, only = false) {
-  if (only) {
-    S.selected = new Set([key]);
-  } else if (S.selected.has(key)) {
-    S.selected.delete(key);
-  } else {
-    S.selected.add(key);
-  }
-  store.set("selected", [...S.selected]);
-  renderChips();
-  rebuildTape();
-  renderStreams();
-  sendFilter();
+function toggleSelected(key,only=false) {
+  const target=window.Desk?.focusedTape();
+  if(!target){toast('Добавьте модуль ленты, чтобы выбрать для неё биржу');return;}
+  target.p.keys=only?[key]:target.p.keys.includes(key)?target.p.keys.filter(k=>k!==key):[...target.p.keys,key];
+  target.render();target.changed();window.Desk.update('streams');
 }
 
 // ---------- tape ----------
-function tapeThresholds() { return S.tapeMinByCoin?.[S.coin] || {}; }
-function tapeThreshold(key) { return tapeThresholds()[key] ?? S.minUsd; }
-function tapeVisible(r) {
-  if (r.usd < tapeThreshold(r.key)) return false;
-  if (S.side !== "all" && r.side !== S.side) return false;
-  if (S.selected.size && !S.selected.has(r.key)) return false;
-  return true;
-}
+function tapeThresholds(prefs=null) {return (prefs?.minByCoin??S.tapeMinByCoin)?.[S.coin]||{};}
+function tapeThreshold(key,prefs=null) {return tapeThresholds(prefs)[key]??prefs?.minUsd??S.minUsd;}
+function tapeVisible(row,prefs=null) {return WorkspaceModel.visibleTrade(row,prefs||{minUsd:S.minUsd,minByCoin:S.tapeMinByCoin,keys:[...S.selected],market:'all',side:S.side},S.coin);}
 
-function tapeRowHtml(r) {
+function tapeRowHtml(r, prefs = null) {
   const [venue, kind] = splitKey(r.key);
-  const floor = Math.max(1, tapeThreshold(r.key));
+  const floor = Math.max(1, tapeThreshold(r.key, prefs));
   const pct = Math.min(100, (r.usd / (floor * 10)) * 100);
   const big = r.usd >= floor * 5 ? " big" : "";
   const fills = r.fills > 1 ? ` <span class="fills" title="Склеено исполнений одного ордера">×${r.fills}</span>` : "";
@@ -249,83 +181,35 @@ function tapeRowHtml(r) {
 }
 
 function addTrades(rows) {
-  // rows arrive oldest -> newest
-  S.tape = rows.slice().reverse().concat(S.tape).slice(0, TAPE_KEEP);
-  if (S.paused || document.hidden || (window.A && A.view !== "dashboard")) return;
-  const vis = rows.filter(tapeVisible);
-  if (!vis.length) return;
-  const list = $("tapeList");
-  const empty = list.querySelector(".empty");
-  if (empty) empty.remove();
-  list.insertAdjacentHTML("afterbegin", vis.reverse().map(tapeRowHtml).join(""));
-  while (list.childElementCount > TAPE_DOM) list.lastElementChild.remove();
+  S.tape=rows.slice().reverse().concat(S.tape).slice(0,TAPE_KEEP);
+  window.Desk?.trades(rows);
 }
-
-function rebuildTape() {
-  const vis = S.tape.filter(tapeVisible).slice(0, TAPE_DOM);
-  $("tapeList").innerHTML = vis.map(tapeRowHtml).join("")
-    || `<div class="empty">Ждём сделки по фильтрам ленты${S.selected.size ? " на выбранных биржах" : ""}.</div>`;
+function rebuildTape() {window.Desk?.ofType('tape').forEach(m=>m.render());}
+function renderChips() {rebuildTape();}
+let tapeSizeTarget=null,tapeSizeCoin='';
+function openTapeSizeDialog(module) {
+  tapeSizeTarget=module;tapeSizeCoin=S.coin;
+  $('tapeSizeTitle').textContent='Размер сделок · '+S.coin+' · '+(module.spec.title||'Лента');
+  const chosen=S.venueSelection[S.coin],values=tapeThresholds(module.p);
+  $('tapeSizeBody').innerHTML=S.venues.filter(v=>!chosen||chosen.includes(v.name)).map(v=>'<tr data-venue="'+esc(v.name.toLowerCase())+'"><td>'+esc(v.name)+'</td>'+['spot','perp'].map(kind=>{
+    const key=v.name+':'+kind;return '<td>'+(v[kind]?'<input type="number" min="0" max="1000000000000" step="any" data-key="'+esc(key)+'" placeholder="'+module.p.minUsd+'" value="'+(values[key]??'')+'" aria-label="'+esc(v.name)+' '+kind+', USD">':'—')+'</td>';
+  }).join('')+'</tr>').join('');
+  $('tapeSizeSearch').value='';$('tapeSizeDlg').showModal();
 }
-
-function renderChips() {
-  $("tapeFilters").innerHTML = [...S.selected].map((k) => {
-    const [v, kind] = splitKey(k);
-    return `<button class="chip" data-key="${esc(k)}" title="Убрать фильтр">${esc(v)} ${kind}</button>`;
-  }).join("");
-}
-$("tapeFilters").addEventListener("click", (e) => {
-  const b = e.target.closest(".chip");
-  if (b) toggleSelected(b.dataset.key);
-});
-
-$("minUsd").value = S.minUsd;
-$("minUsd").addEventListener("change", () => {
-  S.minUsd = Math.max(0, Number($("minUsd").value) || 0);
-  store.set("minUsd", S.minUsd);
-  sendFilter();
-  rebuildTape();
-});
-$("sideFilter").addEventListener("change", () => { S.side = $("sideFilter").value; rebuildTape(); });
-let tapeSizeCoin = "";
-$("tapeSizeBtn").addEventListener("click", () => {
-  tapeSizeCoin = S.coin;
-  $("tapeSizeTitle").textContent = `Размер сделок · ${S.coin}`;
-  const chosen = S.venueSelection[S.coin];
-  const thresholds = tapeThresholds();
-  $("tapeSizeBody").innerHTML = S.venues.filter(v => !chosen || chosen.includes(v.name)).map(v => `<tr data-venue="${esc(v.name.toLowerCase())}"><td>${esc(v.name)}</td>${["spot", "perp"].map(kind => {
-    const key = `${v.name}:${kind}`;
-    return `<td>${v[kind] ? `<input type="number" min="0" max="1000000000000" step="any" data-key="${esc(key)}" placeholder="${S.minUsd}" value="${thresholds[key] ?? ""}" aria-label="${esc(v.name)} ${kind}, USD">` : "—"}</td>`;
-  }).join("")}</tr>`).join("");
-  $("tapeSizeSearch").value = "";
-  $("tapeSizeDlg").showModal();
-});
-$("tapeSizeSearch").addEventListener("input", () => {
-  const q = $("tapeSizeSearch").value.toLowerCase();
-  $("tapeSizeBody").querySelectorAll("tr").forEach(row => row.hidden = !row.dataset.venue.includes(q));
-});
-$("tapeSizeSearch").addEventListener("keydown", e => { if (e.key === "Enter") e.preventDefault(); });
-$("tapeSizeReset").addEventListener("click", () => $("tapeSizeBody").querySelectorAll("input").forEach(input => input.value = ""));
-$("tapeSizeCancel").addEventListener("click", () => $("tapeSizeDlg").close());
-$("tapeSizeForm").addEventListener("submit", e => {
-  e.preventDefault();
-  if (tapeSizeCoin !== S.coin) { $("tapeSizeDlg").close(); toast("Монета изменилась. Открой фильтры заново"); return; }
-  const values = {...tapeThresholds()};
-  for (const input of $("tapeSizeBody").querySelectorAll("input")) {
-    if (input.value === "") delete values[input.dataset.key];
-    else values[input.dataset.key] = Number(input.value);
+$('tapeSizeSearch').addEventListener('input',()=>{const q=$('tapeSizeSearch').value.toLowerCase();$('tapeSizeBody').querySelectorAll('tr').forEach(row=>row.hidden=!row.dataset.venue.includes(q));});
+$('tapeSizeSearch').addEventListener('keydown',e=>{if(e.key==='Enter')e.preventDefault();});
+$('tapeSizeReset').addEventListener('click',()=>$('tapeSizeBody').querySelectorAll('input').forEach(input=>input.value=''));
+$('tapeSizeCancel').addEventListener('click',()=>$('tapeSizeDlg').close());
+$('tapeSizeForm').addEventListener('submit',e=>{
+  e.preventDefault();const target=tapeSizeTarget;
+  if(tapeSizeCoin!==S.coin||!target||window.Desk.instances.get(target.id)!==target){$('tapeSizeDlg').close();toast('Откройте фильтры заново для текущей монеты и модуля');return;}
+  const values={...tapeThresholds(target.p)};
+  for(const input of $('tapeSizeBody').querySelectorAll('input')){
+    if(input.value==='')delete values[input.dataset.key];
+    else {const n=Number(input.value);if(!Number.isFinite(n)||n<0||n>1e12)return;values[input.dataset.key]=n;}
   }
-  S.tapeMinByCoin = {...S.tapeMinByCoin, [S.coin]: values};
-  store.set("tapeMinByCoin", S.tapeMinByCoin);
-  $("tapeSizeDlg").close(); sendFilter(); rebuildTape();
-  toast("Фильтры сохранены. Новые пороги применяются к входящим сделкам");
+  target.p.minByCoin={...target.p.minByCoin,[S.coin]:values};$('tapeSizeDlg').close();target.render();target.changed();toast('Фильтры этой ленты сохранены');
 });
-$("pauseBtn").addEventListener("click", () => {
-  S.paused = !S.paused;
-  $("pauseBtn").textContent = S.paused ? "▶ Продолжить" : "⏸ Пауза";
-  if (!S.paused) rebuildTape();
-});
-$("hideQuiet").checked = S.hideQuiet;
-$("hideQuiet").addEventListener("change", () => { S.hideQuiet = $("hideQuiet").checked; store.set("hideQuiet", S.hideQuiet); renderStreams(); });
 
 // ---------- alerts ----------
 function alertHtml(a, fresh) {
@@ -338,24 +222,15 @@ function alertHtml(a, fresh) {
     <span class="s">${Math.round(a.score)}</span></div>
     <ul class="alert-reasons">${a.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></li>`;
 }
-function renderAlerts(list) {
-  $("alertsList").innerHTML = list.map((a) => alertHtml(a, false)).join("")
-    || '<li class="empty">Пока тихо. Алерт появится, когда скор биржи превысит порог.</li>';
+function renderAlerts(list) {S.alerts=list.slice(0,200);window.Desk?.update('alerts');}
+function addAlert(alert) {S.alerts=[alert,...S.alerts].slice(0,200);window.Desk?.update('alerts');beep();}
+async function loadAlerts() {
+  if(!window.Desk?.has('alerts'))return;
+  const coin=S.coin,request=++S.alertRequest;
+  try {const rows=await api('/api/alerts?coin='+encodeURIComponent(coin)+'&limit=100');if(coin!==S.coin||request!==S.alertRequest)return;
+    const combined=[...S.alerts,...rows],seen=new Set();renderAlerts(combined.filter(row=>{const key=row.id??JSON.stringify([row.ts,row.key,row.score]);if(seen.has(key))return false;seen.add(key);return true;}).sort((a,b)=>b.ts-a.ts));
+  }catch{/* existing live alerts remain */}
 }
-function addAlert(a) {
-  const list = $("alertsList");
-  const empty = list.querySelector(".empty");
-  if (empty) empty.remove();
-  list.insertAdjacentHTML("afterbegin", alertHtml(a, true));
-  while (list.childElementCount > 200) list.lastElementChild.remove();
-  beep();
-}
-$("alertsList").addEventListener("click", (e) => {
-  if (e.target.closest("li[data-module]") && window.setView) { setView("analysis"); return; }
-  const li = e.target.closest("li[data-key]");
-  if (li) toggleSelected(li.dataset.key, true);
-});
-$("clearAlerts").addEventListener("click", () => (S.tab === "walls" ? renderWalls([]) : renderAlerts([])));
 
 // ---------- walls (large orders near the price) ----------
 const WALL_EVENT = { new: "поставили", moved: "переставили", pulled: "сняли, не исполнив", eaten: "съели" };
@@ -371,40 +246,14 @@ function wallHtml(e, fresh) {
     + `<span class="muted">${(e.dist_bps / 100).toFixed(2)}% · ×${e.ratio.toFixed(0)}${e.age >= 1 ? ` · ${Math.round(e.age)} с` : ""}</span>`
     + `<span class="ev">${what}</span></li>`;
 }
-function renderWalls(list) {
-  $("wallsList").innerHTML = list.map((e) => wallHtml(e, false)).join("")
-    || '<li class="empty">Плит пока нет. Здесь появятся крупные заявки у цены: когда их ставят, переставляют за ценой, снимают или съедают.</li>';
-  $("wallsCount").textContent = "";
-}
-function addWalls(rows) {
-  const list = $("wallsList");
-  const empty = list.querySelector(".empty");
-  if (empty) empty.remove();
-  list.insertAdjacentHTML("afterbegin", rows.slice().reverse().map((e) => wallHtml(e, true)).join(""));
-  while (list.childElementCount > 300) list.lastElementChild.remove();
-  if (S.tab !== "walls") {
-    S.unseenWalls += rows.length;
-    $("wallsCount").textContent = S.unseenWalls;
-  }
-}
-$("wallsList").addEventListener("click", (e) => {
-  const li = e.target.closest("li[data-key]");
-  if (li) toggleSelected(li.dataset.key, true);
-});
+function renderWalls(list) {S.walls=list.slice(0,300);window.Desk?.update('walls');}
+function addWalls(rows) {S.walls=rows.slice().reverse().concat(S.walls).slice(0,300);window.Desk?.update('walls');}
 async function loadWalls() {
-  try { renderWalls(await api("/api/walls?limit=150")); } catch { /* ignore */ }
-}
-function setTab(tab) {
-  S.tab = tab;
-  store.set("tab", tab);
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  $("alertsList").hidden = tab !== "alerts";
-  $("wallsList").hidden = tab !== "walls";
-  if (tab === "walls") { S.unseenWalls = 0; $("wallsCount").textContent = ""; }
-}
-document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
-async function loadAlerts() {
-  try { renderAlerts(await api(`/api/alerts?coin=${encodeURIComponent(S.coin)}&limit=100`)); } catch { /* ignore */ }
+  if(!window.Desk?.has('walls'))return;
+  const coin=S.coin,request=++S.wallRequest;
+  try {const rows=await api('/api/walls?limit=150');if(coin!==S.coin||request!==S.wallRequest)return;
+    const seen=new Set();renderWalls([...S.walls,...rows].filter(row=>{const key=JSON.stringify([row.ts,row.key,row.event,row.price,row.usd]);if(seen.has(key))return false;seen.add(key);return true;}).sort((a,b)=>b.ts-a.ts));
+  }catch{/* existing live wall events remain */}
 }
 
 // ---------- sound ----------
@@ -432,22 +281,13 @@ $("soundBtn").addEventListener("click", () => { S.sound = !S.sound; store.set("s
 
 // ---------- coin ----------
 function setCoin(coin) {
-  if (coin === S.coin) return;
-  S.coin = coin;
-  $("coinLabel").textContent = coin;
-  $("coinInput").placeholder = coin;
-  document.title = `${coin} · Manipulation Radar`;
-  S.tape = [];
-  if (window.A) window.A.snap = null;
-  if (window.resetOiChart) window.resetOiChart();
-  S.selected.clear();
-  store.set("selected", []);
-  renderChips();
-  rebuildTape();
-  sendFilter();
-  loadAlerts();
-  loadWalls();
+  if(coin===S.coin)return;
+  S.coin=coin;$('coinLabel').textContent=coin;$('coinInput').placeholder=coin;document.title=coin+' · Manipulation Radar';
+  S.tape=[];S.alerts=[];S.walls=[];S.alertRequest++;S.wallRequest++;
+  if(window.A)A.snap=null;window.resetOiChart?.();S.selected.clear();store.set('selected',[]);
+  window.Desk?.resetCoin();sendFilter();loadAlerts();loadWalls();
 }
+
 $("coinForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const coin = $("coinInput").value.trim().toUpperCase();
@@ -578,10 +418,9 @@ $("tgTest").addEventListener("click", async () => {
 
 // ---------- websocket ----------
 function sendFilter() {
-  const visible = !document.hidden && (!window.A || A.view === "dashboard");
-  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type:"filter", min_usd:S.minUsd,
-    min_by_key:tapeThresholds(), keys:[...S.selected], tape:visible, walls:visible, analytics:visible, lite:!visible }));
+  if(S.ws&&S.ws.readyState===1){const filter=window.Desk?window.Desk.filter():{tape:false,walls:false,analytics:false,lite:true};S.ws.send(JSON.stringify({type:'filter',...filter}));}
 }
+
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   S.ws = ws;
@@ -616,7 +455,6 @@ function connect() {
 
 async function init() {
   renderSound();
-  setTab(S.tab === "walls" ? "walls" : "alerts");
   renderChips();
   try {
     const st = await api("/api/state");
@@ -633,4 +471,4 @@ async function init() {
   rebuildTape();
   connect();
 }
-init();
+document.addEventListener('DOMContentLoaded',init,{once:true});

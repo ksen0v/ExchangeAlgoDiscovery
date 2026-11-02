@@ -36,10 +36,15 @@ jobs:
 
       - name: Set build version
         id: version
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python -m scripts.prepare_version
 
       - name: Tests
-        run: python -m pytest -q
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/workspace.test.cjs
 
       - name: Build
         env:
@@ -152,6 +157,10 @@ jobs:
           make_latest: true
           fail_on_unmatched_files: true
           body: |
+            Модульный стол: добавляйте нужные модули кнопкой «+», перемещайте и меняйте размер.
+            Два режима размещения: магнит и свободный. Рабочие пространства можно создавать,
+            переименовывать, копировать и удалять; компоновка и настройки модулей сохраняются.
+
             Установщик Windows. При первой установке запустите ManipulationRadar-Setup.exe.
             Следующие версии доступны через «Обновления…» в приложении.
             После перехода на новую систему приложение загружает только изменившиеся файлы.
@@ -162,3 +171,9 @@ jobs:
             dist/files.json
             dist/size-report.json
             ${{ steps.files.outputs.parts }}
+
+      - name: Start public release history at 1.0.0
+        if: success() && steps.version.outputs.version == '1.0.0' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/minimal-radar' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m scripts.retire_legacy_releases

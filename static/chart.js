@@ -36,7 +36,8 @@ class RadarChart {
     });
     this.observer = new ResizeObserver(() => this.request());
     this.observer.observe(el);
-    document.addEventListener("radar-theme", () => this.request());
+    this.onTheme = () => this.request();
+    document.addEventListener("radar-theme", this.onTheme);
   }
   update(points, options = {}) {
     this.options = {...this.options, ...options};
@@ -66,7 +67,18 @@ class RadarChart {
     this.request();
   }
   reset() { this.points = []; this.live(); }
-  setActive(active) { this.active = active; if (active) this.request(); }
+  setActive(active) {
+    this.active = active;
+    if (!active && this.frame) { cancelAnimationFrame(this.frame); this.frame = null; }
+    if (active) this.request();
+  }
+  destroy() {
+    this.setActive(false);
+    this.observer.disconnect();
+    document.removeEventListener("radar-theme", this.onTheme);
+    this.points = [];
+    this.el.replaceChildren();
+  }
   bound() {
     const first = this.points[0]?.[0];
     if (first == null) return;

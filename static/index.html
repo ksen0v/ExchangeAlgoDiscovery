@@ -6,16 +6,17 @@
   <title>Manipulation Radar</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23f0b90b'/></svg>">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/workspace.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">Manipulation&nbsp;Radar <span id="demoBadge" class="demo" hidden title="Сделки сгенерированы (DEMO=1), это не реальные биржи">ДЕМО</span></div>
+  <div class="brand"><span class="radar-mark" aria-hidden="true">◎</span> Manipulation&nbsp;Radar <span id="demoBadge" class="demo" hidden title="Сделки сгенерированы (DEMO=1), это не реальные биржи">ДЕМО</span></div>
   <form id="coinForm" class="coin-form" autocomplete="off">
     <input id="coinInput" placeholder="Тикер, например PEPE" maxlength="20" spellcheck="false" aria-label="Тикер монеты">
     <button type="submit">Мониторить</button>
   </form>
   <nav class="views" aria-label="Экраны">
-    <button class="view-btn" data-view="dashboard">Рабочий экран</button>
+    <button class="view-btn" data-view="dashboard">Модульный стол</button>
     <button class="view-btn" data-view="health" title="Связь с биржами и доступность открытого интереса">Подключения</button>
   </nav>
   <div class="meta">
@@ -32,7 +33,32 @@
   </div>
 </header>
 
-<main class="dashboard view" id="viewTape">
+<main class="workspace-layout view" id="viewTape">
+  <aside class="workspace-sidebar">
+    <div class="sidebar-heading"><h2>Рабочие пространства</h2><button id="newWorkspaceBtn" class="icon-button" aria-label="Создать рабочее пространство">+</button></div>
+    <nav id="workspaceList" class="workspace-list" aria-label="Рабочие пространства"></nav>
+    <div class="sidebar-section"><h2>Инструмент</h2><strong id="deskCoin" class="desk-coin">—</strong><span id="deskPrice" class="desk-price num">—</span><span class="muted small">USDT · основная монета</span></div>
+    <div class="sidebar-section"><div class="sidebar-heading"><h2>Подключения</h2><button id="sidebarVenuesBtn" class="icon-button" aria-label="Выбрать биржи">↗</button></div><div id="deskConnections" class="desk-connections"></div></div>
+    <div class="sidebar-bottom"><span class="connection-dot"></span><span id="workspaceSaveStatus" role="status">Компоновка сохраняется</span><span class="muted small">Manipulation Radar <span id="appVersion">1.0.0</span></span></div>
+  </aside>
+  <section class="workspace-main" aria-label="Рабочий стол">
+    <div class="workspace-toolbar">
+      <h1 id="workspaceTitle">Мой радар</h1><button id="workspaceMenuBtn" class="icon-button" aria-label="Действия с рабочим пространством" aria-expanded="false">⋯</button>
+      <span class="spacer"></span>
+      <div class="placement-switch" role="group" aria-label="Режим размещения"><button data-placement="magnet" aria-pressed="true">⌁ Магнит</button><button data-placement="free" aria-pressed="false">Свободный</button></div>
+      <button id="tileWorkspaceBtn" class="ghost small">Упорядочить</button>
+      <button id="addModuleBtn" class="add-module-button" aria-haspopup="dialog" aria-expanded="false"><b aria-hidden="true">+</b> Модуль</button>
+    </div>
+    <div id="deskSurface" class="desk-surface" aria-label="Модули рабочего пространства">
+      <div id="deskEmpty" class="desk-empty" hidden><span class="empty-desk-symbol" aria-hidden="true">⊞</span><h2>Ваш рабочий стол</h2><p>Добавьте нужные модули и расположите их как удобно.</p><button id="emptyAddModuleBtn">+ Добавить модуль</button></div>
+      <div id="snapGuideX" class="snap-guide vertical" hidden></div><div id="snapGuideY" class="snap-guide horizontal" hidden></div>
+    </div>
+    <footer class="workspace-footer"><span id="deskModuleCount">0 модулей</span><span id="placementHint">Магнит стыкует соседние края при перемещении</span><span class="spacer"></span><span id="deskClock"></span></footer>
+  </section>
+</main>
+
+<template id="moduleTemplates">
+<div class="module-template-bank">
   <section class="panel streams">
     <div class="panel-head">
       <h2>Биржи</h2>
@@ -139,7 +165,8 @@
     <p class="chart-help muted">Тяни — перемещение · колесо — масштаб · двойной клик — сброс. История до 24 ч во время работы.</p>
   </section>
 </div>
-</main>
+</div>
+</template>
 
 <main class="view health" id="viewHealth" hidden>
   <div class="cards" id="healthCards"></div>
@@ -224,8 +251,16 @@
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
+<div id="modulePicker" class="module-picker floating-menu" role="dialog" aria-label="Добавить модуль" hidden><div class="picker-heading"><div><h2>Добавить модуль</h2><p>Можно разместить несколько экземпляров</p></div><button class="icon-button" data-close-picker aria-label="Закрыть меню">×</button></div><div id="moduleCatalog" class="module-catalog"></div></div>
+<div id="workspaceMenu" class="floating-menu context-menu" role="menu" aria-label="Рабочее пространство" hidden><button role="menuitem" data-space-action="rename">Переименовать</button><button role="menuitem" data-space-action="duplicate">Создать копию</button><button role="menuitem" data-space-action="create">Новое пространство</button><button role="menuitem" data-space-action="delete" class="danger">Удалить пространство</button></div>
+<div id="moduleMenu" class="floating-menu context-menu" role="menu" aria-label="Модуль" hidden><button role="menuitem" data-module-action="rename">Переименовать</button><button role="menuitem" data-module-action="duplicate">Дублировать модуль</button><button role="menuitem" data-module-action="remove" class="danger">Удалить модуль</button></div>
+<dialog id="workspaceNameDlg"><form id="workspaceNameForm"><h3 id="workspaceNameTitle">Новое рабочее пространство</h3><label>Название<input id="workspaceNameInput" maxlength="80" required autocomplete="off"></label><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit">Сохранить</button></div></form></dialog>
+<dialog id="deleteWorkspaceDlg"><form id="deleteWorkspaceForm"><h3>Удалить рабочее пространство?</h3><p id="deleteWorkspaceText"></p><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit" class="danger">Удалить</button></div></form></dialog>
+<script src="/static/workspace-model.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/chart.js"></script>
+<script src="/static/modules.js"></script>
+<script src="/static/workspace.js"></script>
 <script src="/static/analysis.js"></script>
 </body>
 </html>

@@ -25,7 +25,12 @@ def main():
     cache.mkdir()
     # A real earlier version with only a different chart file and external build metadata.
     parts = VERSION.split(".")
-    parts[-1] = str(int(parts[-1]) - 1)
+    # Also works for 1.0.0: borrow from the first nonzero version component.
+    for index in range(len(parts) - 1, -1, -1):
+        if int(parts[index]) > 0:
+            parts[index] = str(int(parts[index]) - 1)
+            break
+        parts[index] = "0"
     baseline = ".".join(parts)
     core = installed / "versions" / baseline
     core.parent.mkdir(parents=True)

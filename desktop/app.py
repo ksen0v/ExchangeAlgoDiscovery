@@ -982,28 +982,55 @@ class Controller(QObject):
 
     def _selftest_inspect(self) -> None:
         script = """JSON.stringify((() => {
+          const oiModule = Desk.ofType('oiChart')[0], oiChart = oiModule.chart;
           const before = oiChart.span;
           oiChart.zoom(.8, .5);
           const end = oiChart.end;
           oiChart.update(oiChart.points);
           const interactive = !oiChart.follow && oiChart.span < before && Math.abs(oiChart.end - end) < .001;
-          oiChart.live(A.oiSeconds);
+          oiChart.live(oiModule.p.seconds);
+          const saved = WorkspaceModel.clone(Desk.model), cached = localStorage.getItem('workspaces.v1');
+          const changed = Desk.changed, subscriptions = Desk.subscriptionsChanged;
+          let modular = false, independent = false, disposed = false;
+          // Exercise real DOM controllers without writing temporary CI layouts to user preferences.
+          Desk.changed = () => {}; Desk.subscriptionsChanged = () => {};
+          try {
+            Desk.nameDialog('create');
+            document.getElementById('workspaceNameInput').value = 'CI workspace';
+            document.getElementById('workspaceNameForm').requestSubmit();
+            const spaceId = Desk.active.id;
+            const first = Desk.add('oiChart'), second = Desk.add('oiChart');
+            first.p.unit = 'usd'; first.render();
+            independent = second.p.unit === 'coins' && first.chart !== second.chart;
+            Desk.remove(first.id);
+            disposed = !first.root.isConnected && !first.chart.active && first.chart.points.length === 0;
+            Desk.nameDialog('rename', spaceId);
+            document.getElementById('workspaceNameInput').value = 'OI workspace';
+            document.getElementById('workspaceNameForm').requestSubmit();
+            const restored = WorkspaceModel.normalize(JSON.parse(JSON.stringify(Desk.model)));
+            modular = Desk.active.name === 'OI workspace' && restored.spaces.length === saved.spaces.length + 1 && restored.spaces.at(-1).modules.length === 1;
+            Desk.deleteSpace(spaceId);
+          } finally {
+            Desk.model = saved; Desk.mount(); Desk.changed = changed; Desk.subscriptionsChanged = subscriptions;
+            Desk.subscriptionsChanged();
+          }
           const original = document.documentElement.dataset.theme;
           applyTheme('light');
           const light = getComputedStyle(document.body).backgroundColor;
           applyTheme('dark');
           const dark = getComputedStyle(document.body).backgroundColor;
           applyTheme(original);
-          return {ready: !!A.snap && document.querySelectorAll('#oiChart canvas').length === 2,
+          return {ready: !!A.snap && Desk.ofType('oiChart')[0].root.querySelectorAll('canvas').length === 2,
                   bridge: !!window.radarDesktop, interactive,
                   themes: light !== dark,
-                  panels: document.querySelectorAll('.dashboard .panel').length,
-                  fits: Array.from(document.querySelectorAll('.dashboard .panel')).every(el => {
+                  modular, independent, disposed, preferences: cached === localStorage.getItem('workspaces.v1'),
+                  panels: document.querySelectorAll('.desk-surface .desk-module').length,
+                  fits: Array.from(document.querySelectorAll('.desk-surface .desk-module')).every(el => {
                     const r=el.getBoundingClientRect(); return r.bottom <= innerHeight+1 && r.right <= innerWidth+1 && r.top >= 0 && r.left >= 0;
                   }),
                   theme: document.documentElement.dataset.theme};
         })())"""
-        self.main.web.page().runJavaScript(script, self._selftest_dashboard)
+        self.main.web.page().runJavaScript(script, lambda raw: QTimer.singleShot(250, lambda: self._selftest_dashboard(raw)))
 
     def _selftest_dashboard(self, raw) -> None:
         try:
@@ -1032,7 +1059,7 @@ class Controller(QObject):
         }
         ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"] and not result["dashboard_errors"]
         ok = ok and all(v["trades"] > 0 for v in result["extra"].values())
-        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits")) and dashboard.get("panels") == 7
+        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits", "modular", "independent", "disposed", "preferences")) and dashboard.get("panels") == 6
         ok = ok and all(result["metric_data"].values())
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")

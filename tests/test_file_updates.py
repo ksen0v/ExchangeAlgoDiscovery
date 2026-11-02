@@ -61,6 +61,27 @@ def installation(tmp_path, monkeypatch):
     return root, core, target, blobs
 
 
+def test_one_zero_updates_work_after_old_release_assets_are_retired(installation, tmp_path):
+    import shutil
+    from scripts.file_release import build_manifest
+
+    root, core, _, _ = installation
+    previous = d.read_json_file(core / d.FILES_NAME)
+    previous["files"]["_internal/runtime.dll"] = entry(b"unchanged runtime", True)
+    previous["files"]["_internal/runtime.dll"]["source"]["url"] = previous["files"]["_internal/runtime.dll"]["source"]["url"].replace("v0.1.11", "v0.1.10")
+    d.atomic_json(core / d.FILES_NAME, previous)
+    fresh = tmp_path / "fresh-core"
+    shutil.copytree(core, fresh)
+    (fresh / d.BUILD_INFO).write_bytes(b'{"version":"1.0.0"}')
+    (fresh / "_internal/static/chart.js").write_bytes(b"modular workspace")
+    target = build_manifest(fresh, root / d.LAUNCHER_NAME, "1.0.0", tmp_path / "parts", previous)
+    assert target["files"]["_internal/runtime.dll"]["source"] is None
+    assert all(e["source"] is None or "/v1.0.0/" in e["source"]["url"]
+               for e in [*target["files"].values(), target["launcher"]])
+    plan = f.plan_files(root, "0.1.10", target)
+    assert set(plan.changed) == {d.BUILD_INFO, "_internal/static/chart.js"}
+
+
 @pytest.mark.parametrize("path", ["../outside", "/absolute", "C:/app.exe", "a\\b", "a//b", "a/../b", "a:stream", "CON.txt", "a/NUL", "a.", "a "])
 def test_package_paths_cannot_escape_or_alias_windows_files(path):
     with pytest.raises(d.UpdateError): d.safe_relative(path)

@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from starlette.requests import HTTPConnection
 
 from app.analytics.engine import OI_CHART_WINDOWS, OI_TOTAL, Analytics
@@ -22,6 +22,7 @@ from app.hub import Client, Hub
 from app.manager import MAX_WATCH, Manager
 from app.storage import Storage
 from app.telegram import Telegram, format_alert
+from app.workspaces import Layout
 
 logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("ccxt").setLevel(logging.WARNING)
@@ -203,6 +204,37 @@ async def get_state() -> dict:
             for v in VENUES
         ],
     }
+
+
+@app.get("/api/version")
+async def get_version() -> dict:
+    from desktop.version import VERSION
+    return {"version": VERSION}
+
+
+@app.get("/api/workspaces")
+async def get_workspaces():
+    saved = await S.storage.get("workspaces.v1", None)
+    if saved is None:
+        return None
+    try:
+        return Layout.model_validate(saved).model_dump(mode="json")
+    except ValidationError:
+        log.warning("Invalid saved workspace layout; retaining the stored copy for recovery")
+        return None
+
+
+@app.put("/api/workspaces")
+async def put_workspaces(request: Request):
+    raw = await request.body()
+    if len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Слишком большой набор рабочих пространств")
+    try:
+        layout = Layout.model_validate_json(raw)
+    except ValidationError as error:
+        raise HTTPException(422, "Некорректная компоновка рабочего пространства") from error
+    await S.storage.set("workspaces.v1", layout.model_dump(mode="json"))
+    return {"updatedAt": layout.updatedAt}
 
 
 class CoinIn(BaseModel):

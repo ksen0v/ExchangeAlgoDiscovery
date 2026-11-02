@@ -14,4 +14,5 @@ try:
 except (OSError, ValueError, KeyError, TypeError, UpdateError):
     if getattr(sys, "frozen", False):
         raise RuntimeError("Номер установленной версии повреждён. Повторите установку")
-    VERSION, BUILD_SHA = "0.1.0", "development"
+    VERSION, BUILD_SHA = (_root / "VERSION").read_text("utf-8").strip(), "development"
+    version_key(VERSION)

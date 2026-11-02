@@ -9,7 +9,7 @@ from pathlib import Path
 
 from desktop.distribution import (BUILD_INFO, CORE_NAME, CURRENT_NAME, FILES_NAME, LAUNCHER_NAME,
                                   MAX_JSON_SIZE, REPOSITORY, SCHEMA, atomic_json, asset_url, file_hash,
-                                  validate_manifest)
+                                  validate_manifest, version_key)
 from desktop.version import VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +50,10 @@ def build_manifest(core: Path, launcher: Path, version: str, parts: Path, previo
             before = old_entries.get(key)
             if before and before["sha256"] == entry["sha256"]:
                 entry["source"] = before.get("source")
+                # The 1.0 line remains independent when the user-requested old releases are removed.
+                if (version_key(version) >= version_key("1.0.0") and entry["source"]
+                        and "/releases/download/v0." in entry["source"]["url"]):
+                    entry["source"] = None
             elif publish:
                 source = launcher if key == "$launcher" else core / key
                 entry.update(make_part(source, entry, parts, version))
