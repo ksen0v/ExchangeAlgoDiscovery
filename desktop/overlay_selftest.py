@@ -24,7 +24,7 @@ def verify_controls(ctl, complete):
     for widget in hidden:
         widget.hide()
     target = QPushButton(None)
-    target.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+    target.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
     target.setStyleSheet("background:#ff00ff;border:0;border-radius:0")
     target.setGeometry(overlay.geometry())
     clicks = []

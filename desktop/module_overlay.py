@@ -84,6 +84,11 @@ class OverlayHeader(QWidget):
         self.drag = None
         event.accept()
 
+    def closeEvent(self, event):
+        if self.floating:
+            self.overlay.close()
+        event.accept()
+
 
 class ModuleOverlay(QWidget):
     def __init__(self, ctl, key: str, record: dict):
