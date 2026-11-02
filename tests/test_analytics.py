@@ -30,6 +30,25 @@ def test_oi_coins_units():
     # 1000PEPE contract: coins of 1000PEPE x 1000 = PEPE
     assert oi_coins({"openInterestAmount": 3}, m, "bybit", 0.012, mult=1000) == 3000
     assert oi_coins({}, m, "bybit", 2.0) is None
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":.01}, "kucoinfutures", 2) == .5
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":10}, "gate", 2) == 500
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":1,"inverse":True}, "gate", 2) == 25
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":1,"inverse":True}, "gate", None) is None
+
+
+def test_gate_current_oi_uses_single_contract_endpoint_without_history():
+    import asyncio
+    from types import SimpleNamespace
+    from app.analytics.derivs import CcxtDerivFeed
+
+    class Gate:
+        async def public_futures_get_settle_contracts_contract(self, params):
+            assert params == {"settle":"usdt", "contract":"XYZ_USDT"}
+            return {"position_size":"250", "mark_price":"2"}
+
+    stream = SimpleNamespace(key="Gate:perp", ex_id="gate", market={"settleId":"usdt", "id":"XYZ_USDT"})
+    raw = asyncio.run(CcxtDerivFeed(stream, None)._fetch(Gate()))
+    assert oi_coins(raw, {"contractSize":.1}, "gate", 2) == 25
 
 
 def test_cvd_excludes_seed_but_delta_includes_it():

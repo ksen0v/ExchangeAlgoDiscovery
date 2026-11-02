@@ -8,7 +8,7 @@ import time
 from app.fx import usd_rate
 
 log = logging.getLogger(__name__)
-OI_IN_CONTRACTS = {"okx", "bitmex", "delta"}
+OI_IN_CONTRACTS = {"okx", "bitmex", "delta", "gate", "kucoin", "kucoinfutures"}
 OI_FROM_VALUE = {"xt", "btse", "bingx", "backpack", "hitbtc"}
 
 
@@ -29,7 +29,9 @@ def oi_coins(oi: dict, market: dict, ex_id: str, price: float | None, mult: floa
     value = _num(oi.get("openInterestValue"))
     cs = _num(market.get("contractSize")) or 1.0
     coins = None
-    if ex_id in OI_FROM_VALUE and value and price:
+    if market.get("inverse") and amount is not None and ex_id in OI_IN_CONTRACTS:
+        coins = amount * cs / price if price and price > 0 else None
+    elif ex_id in OI_FROM_VALUE and value and price:
         coins = value / price
     elif ex_id in OI_IN_CONTRACTS and amount is not None:
         coins = amount * cs
@@ -57,6 +59,16 @@ class CcxtDerivFeed:
             task.cancel()
         self.tasks = []
 
+    async def _fetch(self, ex):
+        if self.stream.ex_id == "gate":
+            # ccxt 4.5.83 exposes only historical OI for Gate. The public contract
+            # endpoint supplies the current long position_size (contracts), no history download.
+            m = self.stream.market
+            raw = await ex.public_futures_get_settle_contracts_contract(
+                {"settle": m["settleId"], "contract": m["id"]})
+            return {"openInterestAmount":raw.get("position_size"), "mark_price":raw.get("mark_price")}
+        return await ex.fetch_open_interest(self.stream.symbol)
+
     async def _run(self):
         backoff = 5.0
         while True:
@@ -64,14 +76,19 @@ class CcxtDerivFeed:
             if ex is None or self.stream.status not in ("live", "polling"):
                 await asyncio.sleep(2)
                 continue
-            if not ex.has.get("fetchOpenInterest"):
+            if not ex.has.get("fetchOpenInterest") and self.stream.ex_id != "gate":
                 self.status = "нет публичного ОИ"
                 return
             try:
                 started = time.monotonic()
-                raw = await asyncio.wait_for(ex.fetch_open_interest(self.stream.symbol), 20)
+                raw = await asyncio.wait_for(self._fetch(ex), 20)
                 price = self.sink.last_price(self.key)
                 quote_price = price * self.stream.mult / (usd_rate(self.stream.quote) or 1) if price else None
+                if quote_price is None:
+                    quote_price = _num(raw.get("mark_price"))
+                    fx = usd_rate(self.stream.quote)
+                    if quote_price and fx:
+                        price = quote_price * fx / self.stream.mult
                 coins = oi_coins(raw, self.stream.market, self.stream.ex_id, quote_price, self.stream.mult)
                 if coins is not None:
                     self.sink.oi(self.key, time.time(), coins, coins * price if price else None)
