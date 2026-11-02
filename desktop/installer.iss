@@ -44,8 +44,8 @@ Source: "{#RootPath}dist\ManipulationRadar\*"; DestDir: "{app}"; Flags: ignoreve
 Type: filesandordirs; Name: "{app}\_internal"; Check: LegacyRuntime
 
 [Icons]
-Name: "{userprograms}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; WorkingDir: "{app}"
-Name: "{userdesktop}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; Tasks: desktopicon; WorkingDir: "{app}"
+Name: "{userprograms}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; WorkingDir: "{app}"; AppUserModelID: "ksen0v.ManipulationRadar"
+Name: "{userdesktop}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; Tasks: desktopicon; WorkingDir: "{app}"; AppUserModelID: "ksen0v.ManipulationRadar"
 
 [Run]
 Filename: "{app}\ManipulationRadar.exe"; Description: "Запустить Manipulation Radar"; Flags: nowait postinstall skipifsilent; Check: NormalLaunch

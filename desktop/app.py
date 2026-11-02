@@ -1112,6 +1112,14 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging()
     log.info("starting, data dir %s", data_dir())
+    if sys.platform == "win32":
+        # Version folders change at each update; the taskbar identity and installed
+        # shortcut must keep pointing to the stable launcher, not an old core EXE.
+        import ctypes
+        identity = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        identity.argtypes = [ctypes.c_wchar_p]
+        identity.restype = ctypes.c_long
+        identity("ksen0v.ManipulationRadar")
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
