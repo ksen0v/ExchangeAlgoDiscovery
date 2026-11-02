@@ -91,6 +91,27 @@ def test_only_changed_files_are_downloaded_and_existing_files_are_untouched(inst
     assert (core / "_internal/static/chart.js").read_bytes() == b"original chart"
 
 
+def test_release_check_selects_small_update_and_checks_manifest_digest(installation, monkeypatch):
+    root, _, target, blobs = installation
+    raw = json.dumps(target).encode()
+    sha = hashlib.sha256(raw).hexdigest()
+    base = f"https://github.com/{d.REPOSITORY}/releases/download/v0.1.11/"
+    release = {"tag_name":"v0.1.11", "assets":[
+        {"name":d.SETUP_NAME,"size":1000000,"browser_download_url":base+d.SETUP_NAME,"digest":"sha256:"+"a"*64},
+        {"name":d.MANIFEST_NAME,"browser_download_url":base+d.MANIFEST_NAME},
+        {"name":d.FILES_NAME,"size":len(raw),"browser_download_url":base+d.FILES_NAME,"digest":"sha256:"+sha}]}
+    metadata = {"version":"0.1.11","installer":d.SETUP_NAME,"size":1000000,"sha256":"a"*64,
+                "file_manifest":{"asset":d.FILES_NAME,"size":len(raw),"sha256":sha}}
+    monkeypatch.setattr(updates,"read_json",lambda url:release if url==updates.RELEASES_URL else metadata)
+    monkeypatch.setattr(updates,"_request",lambda url:Download(raw if url==base+d.FILES_NAME else blobs[url]))
+    found = updates.check_release("0.1.10", root)
+    assert found.file_plan is not None and found.download_size < 1000
+    assert set(found.file_plan.changed) == {d.BUILD_INFO,"_internal/static/chart.js"}
+    # A malformed or corrupted file manifest can only select the verified full installer.
+    metadata["file_manifest"]["sha256"] = "f"*64
+    assert updates.check_release("0.1.10", root).file_plan is None
+
+
 def test_missing_baseline_files_require_full_repair(installation):
     root, core, target, _ = installation
     (core / "_internal/runtime.dll").write_bytes(b"corrupted runtime")
