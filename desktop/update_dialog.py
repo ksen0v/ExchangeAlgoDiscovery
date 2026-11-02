@@ -29,6 +29,8 @@ class UpdateJob(QObject):
                 if release is None:
                     root = installed_root(Path(sys.executable)) if getattr(sys, "frozen", False) else None
                     if root:
+                        from desktop.file_updates import clean_update_cache
+                        clean_update_cache(data_dir() / "updates")
                         self.status.emit("Проверяем выпуск и сравниваем файлы приложения…")
                     result = check_release(VERSION, root, self.cancel)
                     if not self.cancel.is_set():

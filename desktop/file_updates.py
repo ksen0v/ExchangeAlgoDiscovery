@@ -2,8 +2,10 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
+import time
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -32,6 +34,30 @@ class PreparedUpdate:
     mode: str  # installer | files
     path: Path
     launcher: Path | None = None
+
+
+def clean_update_cache(cache: Path) -> None:
+    """Only our completed update caches; never user settings or an in-progress stage."""
+    if not cache.is_dir():
+        return
+    no_link(cache)
+    for path in cache.iterdir():
+        try:
+            no_link(path)
+            if path.is_file() and re.fullmatch(r"ManipulationRadar-Setup-\d+\.\d+\.\d+(?:\.\d+)?\.exe", path.name):
+                path.unlink()  # Windows keeps an installer that is still executing locked.
+            elif path.is_dir() and re.fullmatch(r"files-[0-9a-f]{32}", path.name):
+                result = safe_file(path, "result.json")
+                if (not result.is_file() or time.time() - result.stat().st_mtime < 3600
+                        or read_json_file(safe_file(path,"owned.json")) != {"schema":1,"type":"radar-file-update"}):
+                    continue
+                if path.resolve().parent != cache.resolve():
+                    continue
+                for child in path.rglob("*"):
+                    no_link(child)
+                shutil.rmtree(path)
+        except (OSError, ValueError, UpdateError):
+            continue
 
 
 def plan_files(root: Path, current: str, target: dict, cancel=None) -> FilePlan | None:

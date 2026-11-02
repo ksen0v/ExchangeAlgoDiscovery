@@ -170,3 +170,22 @@ def test_file_download_failure_uses_the_full_installer(installation, tmp_path, m
     messages = []
     result = updates.prepare_update(release, tmp_path / "cache", threading.Event(), status=messages.append)
     assert result.mode == "installer" and messages
+
+
+def test_cache_cleanup_only_removes_our_completed_downloads(tmp_path):
+    import time
+    cache = tmp_path / "updates"
+    cache.mkdir()
+    (cache / "ManipulationRadar-Setup-0.1.35.exe").write_bytes(b"old full download")
+    (cache / "personal.exe").write_bytes(b"keep")
+    complete = cache / ("files-" + "a"*32)
+    active = cache / ("files-" + "b"*32)
+    for stage in (complete,active):
+        stage.mkdir()
+        d.atomic_json(stage / "owned.json", {"schema":1,"type":"radar-file-update"})
+    d.atomic_json(complete / "result.json", {"ok":True})
+    os.utime(complete / "result.json", (time.time()-7200, time.time()-7200))
+    f.clean_update_cache(cache)
+    assert not complete.exists() and active.exists()
+    assert not (cache / "ManipulationRadar-Setup-0.1.35.exe").exists()
+    assert (cache / "personal.exe").read_bytes() == b"keep"
