@@ -61,6 +61,7 @@ async def tick_loop() -> None:
             empty = {"score": 0, "reasons": []}
             now = time.time()
             publish_analytics = now - analytics_at >= 2
+            pending_alerts, pending_analytics = [], []
             for coin, item in list(S.manager.instruments.items()):
                 metrics, alerts = item.detector.tick(now)
                 item.snapshot = {"type": "snapshot", "coin": coin, "ts": now,
@@ -68,13 +69,16 @@ async def tick_loop() -> None:
                                  "streams": [{**s.info(), **metrics.get(s.key, empty)} for s in item.streams.values()]}
                 item.analytics.tick(now, item.detector.consensus, item.streams)
                 if publish_analytics and any(c.analytics and c.follows(coin, S.hub.primary) for c in S.hub.clients):
-                    S.hub.broadcast_coin(item.analytics.snapshot(now, item.streams), coin, analytics_only=True)
-                await _publish_alerts(alerts, item.detector.cfg.telegram)
+                    pending_analytics.append((coin, item.analytics.snapshot(now, item.streams)))
+                pending_alerts.extend(alerts)
             summaries = S.manager.summaries()
             snapshots = {coin: {**item.snapshot, "instruments": summaries}
                          for coin, item in S.manager.instruments.items()}
             if S.manager.coin in snapshots:
                 S.hub.broadcast_snapshot(snapshots[S.manager.coin], snapshots)
+            for coin, snapshot in pending_analytics:
+                S.hub.broadcast_coin(snapshot, coin, analytics_only=True)
+            await _publish_alerts(pending_alerts, S.manager.detector.cfg.telegram)
             if publish_analytics:
                 analytics_at = now
         except asyncio.CancelledError:
