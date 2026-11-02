@@ -19,7 +19,7 @@ from app.config import VENUES, settings
 from app.detector import LIMITS, Detector, DetectorConfig
 from app.fx import run_fx_updater
 from app.hub import Client, Hub
-from app.manager import MAX_WATCH, Manager
+from app.manager import Manager
 from app.storage import Storage
 from app.telegram import Telegram, format_alert
 from app.workspaces import Layout
@@ -47,7 +47,7 @@ S = State()
 async def _publish_alerts(alerts: list[dict], telegram_on: bool) -> None:
     for a in alerts:
         a["id"] = await S.storage.add_alert(a)
-        S.hub.broadcast({"type": "alert", "alert": a})
+        S.hub.broadcast_coin({"type": "alert", "alert": a}, a["coin"])
         if telegram_on:
             S.telegram.send(format_alert(a, settings.timezone))
 
@@ -58,28 +58,29 @@ async def tick_loop() -> None:
         started = time.monotonic()
         try:
             S.manager.sync_connected()
-            metrics, alerts = S.detector.tick()
             empty = {"score": 0, "reasons": []}
-            rows = [{**info, **metrics.get(info["key"], empty)}
-                    for info in S.manager.infos()]
             now = time.time()
-            S.hub.broadcast_snapshot(
-                {
-                    "type": "snapshot",
-                    "coin": S.manager.coin,
-                    "ts": now,
-                    "consensus": S.detector.consensus,
-                    "streams": rows,
-                },
-                S.manager.watch_snapshots(now),
-            )
-            await _publish_alerts(alerts, S.detector.cfg.telegram)
-
-            S.analytics.tick(now, S.detector.consensus, S.manager.streams)
-            if now - analytics_at >= 2 and any(c.analytics and c.follows(S.manager.coin, S.hub.primary)
-                                              for c in S.hub.clients):
+            publish_analytics = now - analytics_at >= 2
+            pending_alerts, pending_analytics = [], []
+            for coin, item in list(S.manager.instruments.items()):
+                metrics, alerts = item.detector.tick(now)
+                item.snapshot = {"type": "snapshot", "coin": coin, "ts": now,
+                                 "consensus": item.detector.consensus,
+                                 "streams": [{**s.info(), **metrics.get(s.key, empty)} for s in item.streams.values()]}
+                item.analytics.tick(now, item.detector.consensus, item.streams)
+                if publish_analytics and any(c.analytics and c.follows(coin, S.hub.primary) for c in S.hub.clients):
+                    pending_analytics.append((coin, item.analytics.snapshot(now, item.streams)))
+                pending_alerts.extend(alerts)
+            summaries = S.manager.summaries()
+            snapshots = {coin: {**item.snapshot, "instruments": summaries}
+                         for coin, item in S.manager.instruments.items()}
+            if S.manager.coin in snapshots:
+                S.hub.broadcast_snapshot(snapshots[S.manager.coin], snapshots)
+            for coin, snapshot in pending_analytics:
+                S.hub.broadcast_coin(snapshot, coin, analytics_only=True)
+            await _publish_alerts(pending_alerts, S.manager.detector.cfg.telegram)
+            if publish_analytics:
                 analytics_at = now
-                S.hub.broadcast_main(S.analytics.snapshot(now, S.manager.streams), analytics_only=True)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let the loop die
@@ -128,8 +129,12 @@ async def lifespan(_: FastAPI):
     if not settings.demo:
         tasks.append(asyncio.create_task(run_fx_updater()))
     await S.manager.set_coin(await S.storage.get("coin", settings.default_coin))
-    watch = await S.storage.get("watch", [])
-    await S.manager.set_watch(watch if isinstance(watch, list) else [])
+    coins = await S.storage.get("instruments", None)
+    if not isinstance(coins, list):
+        watch = await S.storage.get("watch", [])
+        coins = [S.manager.coin, *(watch if isinstance(watch, list) else [])]
+    valid = [c.strip().upper() for c in coins if isinstance(c, str) and c.isascii() and c.isalnum() and len(c) <= 20]
+    await S.manager.set_instruments([*valid, S.manager.coin])
     try:
         yield
     finally:
@@ -195,7 +200,7 @@ async def get_state() -> dict:
         "telegram": S.telegram.configured,
         "demo": settings.demo,
         "watch": list(S.manager.watch),
-        "max_watch": MAX_WATCH,
+        "instruments": S.manager.summaries(),
         "venue_selection": S.manager.venue_selection,
         "venues": [
             {"name": v.name, "spot": bool(v.spot), "perp": bool(v.perp), "custom": any(
@@ -241,41 +246,73 @@ class CoinIn(BaseModel):
     coin: str
 
 
+def valid_coin(raw: str) -> str:
+    coin = raw.strip().upper()
+    if not coin.isascii() or not coin.isalnum() or len(coin) > 20:
+        raise HTTPException(400, "Тикер должен состоять из букв и цифр, например PEPE")
+    return coin
+
+
+async def instruments_changed() -> None:
+    S.detector, S.analytics = S.manager.detector, S.manager.analytics
+    await S.storage.set("instruments", list(S.manager.instruments))
+    await S.storage.set("coin", S.manager.coin)
+    await S.storage.set("watch", list(S.manager.watch))
+    S.hub.broadcast({"type": "instruments", "coins": S.manager.summaries(), "selected": S.manager.coin})
+    S.hub.broadcast({"type": "coin", "coin": S.manager.coin})
+    S.hub.broadcast({"type": "watch", "coins": list(S.manager.watch)})
+
+
 @app.post("/api/coin")
 async def set_coin(body: CoinIn) -> dict:
-    coin = body.coin.strip().upper()
-    if not coin.isalnum() or len(coin) > 20:
-        raise HTTPException(400, "Тикер должен состоять из букв и цифр, например PEPE")
+    coin = valid_coin(body.coin)
     await S.manager.set_coin(coin)
-    await S.storage.set("coin", coin)
-    await S.storage.set("watch", list(S.manager.watch))  # the new main coin leaves the watch list
-    S.hub.broadcast({"type": "coin", "coin": coin})
-    S.hub.broadcast({"type": "watch", "coins": list(S.manager.watch)})
+    await instruments_changed()
     return {"coin": coin}
+
+
+@app.get("/api/instruments")
+async def get_instruments() -> dict:
+    return {"coins": S.manager.summaries(), "selected": S.manager.coin}
+
+
+@app.delete("/api/instruments/{coin}")
+async def remove_instrument(coin: str) -> dict:
+    coin = valid_coin(coin)
+    if coin not in S.manager.instruments:
+        raise HTTPException(404, "Инструмент уже удалён")
+    try:
+        await S.manager.remove_instrument(coin)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    await instruments_changed()
+    return await get_instruments()
 
 
 class WatchIn(BaseModel):
     coins: list[str]
 
 
+@app.post("/api/instruments")
+async def add_instruments(body: WatchIn) -> dict:
+    coins = [valid_coin(c) for c in body.coins]
+    await S.manager.ensure_instruments(coins)
+    await instruments_changed()
+    return await get_instruments()
+
+
 @app.get("/api/watch")
 async def get_watch() -> dict:
-    return {"coins": list(S.manager.watch), "max": MAX_WATCH}
+    return {"coins": list(S.manager.watch)}
 
 
 @app.put("/api/watch")
 async def put_watch(body: WatchIn) -> dict:
-    """Extra coins with a tape of their own (no detector): at most MAX_WATCH."""
-    coins = [c.strip().upper() for c in body.coins if c.strip()]
-    for c in coins:
-        if not c.isalnum() or len(c) > 20:
-            raise HTTPException(400, f"Тикер «{c}» должен состоять из букв и цифр")
-    if len(set(coins) - {S.manager.coin}) > MAX_WATCH:
-        raise HTTPException(400, f"Можно добавить не больше {MAX_WATCH} монет к основной")
+    """Compatibility with the old extra-coin API, without a fixed coin limit."""
+    coins = [valid_coin(c) for c in body.coins if c.strip()]
     result = await S.manager.set_watch(coins)
-    await S.storage.set("watch", result)
-    S.hub.broadcast({"type": "watch", "coins": result})
-    return {"coins": result, "max": MAX_WATCH}
+    await instruments_changed()
+    return {"coins": result}
 
 
 @app.get("/api/config")
@@ -329,41 +366,48 @@ async def put_wall_override(body: WallOverrideIn) -> dict:
         per_coin.pop(body.key, None)  # back to the common settings
     if not per_coin:
         S.detector.wall_overrides.pop(coin, None)
-    if coin == S.manager.coin:
-        S.detector.walls.forget(body.key)  # re-detect with the new thresholds
+    if coin in S.manager.instruments:
+        S.manager.instruments[coin].detector.walls.forget(body.key)
     await S.storage.set("wall_overrides", S.detector.wall_overrides)
     return {"coin": coin, "overrides": S.detector.wall_overrides.get(coin, {})}
 
 
 @app.get("/api/walls")
-async def get_walls(limit: int = 100) -> list[dict]:
-    """Latest wall events of the current coin, newest first."""
-    return list(S.detector.walls.recent)[::-1][: max(0, min(limit, 300))]
+async def get_walls(limit: int = 100, coin: str | None = None) -> list[dict]:
+    item = instrument(coin)
+    return [{**event, "coin": item.coin} for event in list(item.detector.walls.recent)[::-1][:max(0, min(limit, 300))]]
+
+
+def instrument(coin: str | None = None):
+    item = S.manager.instruments.get((coin or S.manager.coin).strip().upper())
+    if item is None:
+        raise HTTPException(404, "Инструмент не добавлен в список")
+    return item
 
 
 @app.get("/api/analytics")
-async def get_analytics() -> dict:
-    """The latest module snapshot of the main coin (the same as the "analytics" WebSocket message)."""
-    return S.analytics.snapshot(time.time(), S.manager.streams)
+async def get_analytics(coin: str | None = None) -> dict:
+    item = instrument(coin)
+    return item.analytics.snapshot(time.time(), item.streams)
 
 
 @app.get("/api/health")
-async def get_health() -> dict:
+async def get_health(coin: str | None = None) -> dict:
+    item = instrument(coin)
     now = time.time()
-    return {"ts": now, "coin": S.manager.coin, "demo": settings.demo,
-            "streams": S.manager.health(now), "feeds": S.analytics.feed_status(S.manager.streams, now)}
+    return {"ts": now, "coin": item.coin, "demo": settings.demo,
+            "streams": [s.health(now) for s in item.streams.values()], "feeds": item.analytics.feed_status(item.streams, now)}
 
 
 @app.get("/api/oi/history")
 async def get_oi_history(key: str, coin: str, seconds: int = 3600) -> dict:
-    if coin.strip().upper() != S.manager.coin:
-        raise HTTPException(409, "Основная монета изменилась")
-    stream = S.manager.streams.get(key)
+    item = instrument(coin)
+    stream = item.streams.get(key)
     if key != OI_TOTAL and (stream is None or stream.kind != "perp"):
         raise HTTPException(404, "Фьючерсная биржа не включена для этой монеты")
     if seconds not in OI_CHART_WINDOWS:
         raise HTTPException(400, "Период графика: 15 минут, 1 час, 4 часа или 24 часа")
-    series = S.analytics.oi_series(key, time.time(), seconds)
+    series = item.analytics.oi_series(key, time.time(), seconds)
     series["stale"] = series["stale"] or (key != OI_TOTAL and stream.status not in ("live", "polling"))
     return series
 

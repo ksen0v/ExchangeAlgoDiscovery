@@ -1,5 +1,5 @@
 "use strict";
-const A={view:store.get('view','dashboard'),snap:null,healthTimer:null,oiTimer:null,oiCache:new Map()};
+const A={view:window.radarOverlay?'dashboard':store.get('view','dashboard'),snap:null,healthTimer:null,oiTimer:null,oiCache:new Map()};
 window.A=A;
 const WIN_RU={'1m':'1м','5m':'5м','15m':'15м','1h':'1ч'};
 const winRu=w=>WIN_RU[w]||w;
@@ -9,7 +9,7 @@ function fmtSigned(v){return v==null?'<span class="dim">—</span>':`<span class
 function dbar(v,max){if(v==null||!max)return '<span class="dbar"></span>';const width=Math.min(50,Math.abs(v)/max*50);return `<span class="dbar"><i class="${v>=0?'pos':'neg'}" style="left:${v>=0?50:50-width}%;width:${width}%"></i></span>`;}
 
 function setView(view){
-  A.view=view==='health'?'health':'dashboard';store.set('view',A.view);
+  A.view=!window.radarOverlay&&view==='health'?'health':'dashboard';if(!window.radarOverlay)store.set('view',A.view);
   $('viewTape').hidden=A.view!=='dashboard';$('viewHealth').hidden=A.view!=='health';
   document.querySelectorAll('.view-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===A.view));
   const visible=!document.hidden&&A.view==='dashboard';Desk.setVisible(visible);sendFilter();refreshOiHistory();
@@ -17,7 +17,7 @@ function setView(view){
   if(document.hidden)return;
   if(A.view==='dashboard'){
     renderStreams();rebuildTape();if(A.snap)renderAnalysis();
-    if(Desk.filter().analytics)api('/api/analytics').then(onAnalytics).catch(e=>toast(e.message));
+    if(S.coin&&Desk.filter().analytics)api('/api/analytics?coin='+encodeURIComponent(S.coin)).then(onAnalytics).catch(e=>toast(e.message));
   }else{loadHealth();A.healthTimer=setInterval(loadHealth,5000);}
 }
 window.setView=setView;
@@ -41,7 +41,8 @@ function refreshOiHistory(){
   if(!wanted.size){clearInterval(A.oiTimer);A.oiTimer=null;return;}
   for(const key of wanted){
     let entry=A.oiCache.get(key);
-    if(entry?.loading||entry&&Date.now()-entry.fetched<10000)continue;
+    const interval=entry?.data&&!entry.error&&!entry.data.points.length?2000:10000;
+    if(entry?.loading||entry&&Date.now()-entry.fetched<interval)continue;
     if(!entry){entry={data:null,fetched:0,error:'',loading:false};A.oiCache.set(key,entry);}
     entry.abort=new AbortController();entry.loading=true;entry.error='';const controller=entry.abort,coin=S.coin;
     api(`/api/oi/history?coin=${encodeURIComponent(coin)}&key=${encodeURIComponent(key)}&seconds=86400`,{signal:controller.signal}).then(data=>{
@@ -54,7 +55,7 @@ window.refreshOiHistory=refreshOiHistory;
 
 async function loadHealth(){
   try{
-    const health=await api('/api/health');if(A.view!=='health'||document.hidden)return;
+    const coin=S.coin,health=await api('/api/health?coin='+encodeURIComponent(coin));if(A.view!=='health'||document.hidden||health.coin!==S.coin)return;
     const rows=health.streams.filter(s=>$('healthAll').checked||!['na','noapi'].includes(s.status));
     $('healthBody').innerHTML=rows.map(s=>`<tr><td>${esc(s.key)}</td><td>${esc(s.status)}</td><td>${esc(s.transport)}</td><td class="r">${s.latency_ms??'—'}</td><td class="r">${s.jitter_ms??'—'}</td><td class="r">${s.last_msg_age??'—'}</td><td class="r">${s.reconnects}</td><td class="r">${s.gaps}</td><td class="r">${s.backfilled}</td><td>${esc(s.book_status)}</td><td>${esc(s.error||s.book_error)}</td></tr>`).join('');
     $('feedsBody').innerHTML=health.feeds.map(s=>`<tr><td>${esc(s.key)}</td><td>${esc(s.oi)}</td><td class="r">${s.oi_age==null?'—':s.oi_age+'с'}</td></tr>`).join('');

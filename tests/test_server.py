@@ -128,16 +128,24 @@ def test_switching_coin_works(client):
     assert client.get("/api/state").json()["coin"] == "DEMOY"
 
 
-def test_watch_up_to_two_extra_coins(client):
+def test_instruments_have_no_three_coin_limit_and_selection_keeps_collectors(client):
     r = client.put("/api/watch", json={"coins": ["pepe", "WIF", "pepe"]})
     assert r.status_code == 200 and r.json()["coins"] == ["PEPE", "WIF"]
-    assert client.put("/api/watch", json={"coins": ["A1", "B2", "C3"]}).status_code == 400
+    original = main.S.manager.instruments["PEPE"]
+    original_stream = original.streams["Binance:spot"]
+    original.analytics.cvd_points.append([0, 123, 456, None])
+    assert client.post("/api/instruments", json={"coins": ["A1", "B2", "C3"]}).status_code == 200
     assert client.put("/api/watch", json={"coins": ["BAD-1"]}).status_code == 400
     st = client.get("/api/state").json()
-    assert st["watch"] == ["PEPE", "WIF"] and st["max_watch"] == 2
-    # a watched coin made the main one leaves the watch list
+    assert [i["coin"] for i in st["instruments"]] == ["DEMOX", "PEPE", "WIF", "A1", "B2", "C3"]
     client.post("/api/coin", json={"coin": "PEPE"})
-    assert client.get("/api/watch").json()["coins"] == ["WIF"]
+    assert main.S.manager.instruments["PEPE"] is original
+    assert main.S.manager.streams["Binance:spot"] is original_stream
+    assert main.S.analytics is original.analytics and [0, 123, 456, None] in main.S.analytics.cvd_points
+    assert client.get("/api/watch").json()["coins"] == ["DEMOX", "WIF", "A1", "B2", "C3"]
+    client.post("/api/coin", json={"coin": "DEMOX"})
+    assert original.streams["Binance:spot"] is original_stream
+    assert client.get("/api/analytics?coin=PEPE").json()["coin"] == "PEPE"
 
 
 def test_ws_client_of_a_watched_coin_gets_only_that_coin(client):
@@ -154,7 +162,8 @@ def test_ws_client_of_a_watched_coin_gets_only_that_coin(client):
             elif msg["type"] == "trades":
                 seen.update(r["coin"] for r in msg["rows"])
                 trades = True
-            assert msg["type"] != "walls"  # walls are for the main coin only
+            if msg["type"] == "walls":
+                assert all(row["coin"] == "WIF" for row in msg["rows"])
             if snap and trades:
                 break
         assert snap and trades and seen == {"WIF"}
@@ -204,9 +213,109 @@ def test_oi_history_endpoint_is_scoped_to_current_coin_and_perp(client):
     r = client.get("/api/oi/history", params={"coin": "DEMOX", "key": "Binance:perp", "seconds": 3600})
     assert r.status_code == 200
     assert r.json()["points"][-1] == [now, 100, 200]
-    assert client.get("/api/oi/history?coin=OTHER&key=Binance:perp").status_code == 409
+    assert client.get("/api/oi/history?coin=OTHER&key=Binance:perp").status_code == 404
     assert client.get("/api/oi/history?coin=DEMOX&key=Binance:spot").status_code == 404
     assert client.get("/api/oi/history?coin=DEMOX&key=Binance:perp&seconds=999").status_code == 400
+    client.post("/api/coin", json={"coin":"OTHER"})
+    retained = client.get("/api/oi/history?coin=DEMOX&key=Binance:perp").json()
+    assert [now, 100, 200] in retained["points"]
+
+
+def test_removing_instrument_stops_only_its_tasks_and_preserves_settings(client):
+    client.post("/api/instruments", json={"coins":["PEPE","WIF"]})
+    client.put("/api/venues", json={"coin":"PEPE","venues":["Binance"]})
+    removed = main.S.manager.instruments["PEPE"]
+    kept = main.S.manager.instruments["WIF"]
+    client.post("/api/coin", json={"coin":"PEPE"})
+    response = client.delete("/api/instruments/PEPE")
+    assert response.status_code == 200 and response.json()["selected"] == "DEMOX"
+    assert all(t.done() for t in removed.tasks.values()) and not removed.analytics.feeds
+    assert main.S.manager.instruments["WIF"] is kept
+    assert all(not t.cancelled() for t in kept.tasks.values())
+    assert client.get("/api/analytics?coin=PEPE").status_code == 404
+    assert client.get("/api/venues?coin=PEPE").json()["venues"] == ["Binance"]
+    template = main.S.manager.instruments["DEMOX"]
+    template.analytics.cvd_points.append([0, 1, 2, None])
+    assert client.delete("/api/instruments/DEMOX").status_code == 200
+    assert not template.detector.states and not template.analytics.cvd_points
+    assert client.get("/api/state").json()["coin"] == "WIF"
+    assert client.delete("/api/instruments/WIF").status_code == 400
+
+
+def test_secondary_coin_has_full_analytics_ws_without_changing_selected_instrument(client):
+    client.post("/api/instruments", json={"coins":["WIF"]})
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type":"filter", "coin":"WIF", "analytics":True,"tape":False,"walls":False})
+        for _ in range(50):
+            message = ws.receive_json()
+            if message["type"] == "analytics":
+                assert message["coin"] == "WIF"
+                assert set(message) == {"type","coin","ts","delta","cvd","oi"}
+                break
+        else:
+            raise AssertionError("Secondary instrument did not receive analytics")
+    assert client.get("/api/state").json()["coin"] == "DEMOX"
+
+
+def test_instrument_list_and_selection_survive_restart(client):
+    import asyncio
+    from app.storage import Storage
+
+    client.post("/api/instruments", json={"coins":["WIF","PEPE"]})
+    client.post("/api/coin", json={"coin":"PEPE"})
+    async def saved():
+        db = Storage(settings.db_path)
+        await db.open()
+        try:
+            return await db.get("instruments"), await db.get("coin")
+        finally:
+            await db.close()
+    assert asyncio.run(saved()) == (["DEMOX","WIF","PEPE"], "PEPE")
+
+
+def test_legacy_watch_migrates_to_full_sessions_and_restores_order_after_restart(tmp_path, monkeypatch):
+    import asyncio
+    from app.storage import Storage
+
+    monkeypatch.setattr(settings, "demo", True)
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "legacy.db"))
+    async def legacy_preferences():
+        db = Storage(settings.db_path)
+        await db.open()
+        try:
+            await db.set("coin", "ETH")
+            await db.set("watch", ["WIF", "PEPE"])
+            await db.set("venue_selection", {c:["Binance"] for c in ["ETH","WIF","PEPE","SOL"]})
+        finally:
+            await db.close()
+    asyncio.run(legacy_preferences())
+    with TestClient(main.app) as first:
+        assert [i["coin"] for i in first.get("/api/state").json()["instruments"]] == ["ETH","WIF","PEPE"]
+        assert first.get("/api/analytics?coin=WIF").json()["coin"] == "WIF"
+        first.post("/api/coin", json={"coin":"SOL"})
+        first.post("/api/coin", json={"coin":"WIF"})
+    with TestClient(main.app) as second:
+        state = second.get("/api/state").json()
+        assert state["coin"] == "WIF"
+        assert [i["coin"] for i in state["instruments"]] == ["ETH","WIF","PEPE","SOL"]
+
+
+def test_walls_and_lite_snapshots_route_by_instrument():
+    import orjson
+    from app.hub import Hub
+    hub = Hub()
+    hub.primary = "A"
+    first, second = hub.add(None), hub.add(None)
+    first.set_filter({"coin":"A","lite":True})
+    second.set_filter({"coin":"B","lite":True})
+    hub.broadcast_snapshot({"coin":"A","streams":[{"key":"X:spot","spark":[1,2]}]},
+                           {"B":{"coin":"B","streams":[{"key":"X:spot","spark":[3,4]}]}})
+    assert "spark" not in orjson.loads(first.queue.get_nowait())["streams"][0]
+    assert "spark" not in orjson.loads(second.queue.get_nowait())["streams"][0]
+    hub.push_walls([{"coin":"A","key":"X:spot"},{"coin":"B","key":"X:spot"}])
+    hub.flush_tape()
+    assert [row["coin"] for row in orjson.loads(first.queue.get_nowait())["rows"]] == ["A"]
+    assert [row["coin"] for row in orjson.loads(second.queue.get_nowait())["rows"]] == ["B"]
 
 
 def test_venue_selection_is_per_coin_and_persisted(client):

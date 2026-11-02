@@ -24,6 +24,7 @@ class Feed(QObject):
     alert = Signal(dict)
     coin_changed = Signal(str)
     watch_changed = Signal(list)  # extra coins on the server
+    instruments_changed = Signal(dict)
     connection = Signal(bool, str)  # connected, error text
     request_failed = Signal(str)
 
@@ -76,6 +77,9 @@ class Feed(QObject):
     def put_watch(self, coins: list[str]) -> None:
         """Extra coins the server should collect trades for."""
         self._request("PUT", "/api/watch", {"coins": coins})
+
+    def ensure_coins(self, coins: list[str]) -> None:
+        self._request("POST", "/api/instruments", {"coins": coins})
 
     # ---- feed thread -----------------------------------------------------
     def _main(self) -> None:
@@ -137,6 +141,8 @@ class Feed(QObject):
             self.watch_changed.emit(msg.get("coins") or [])
         elif kind == "coin":
             self.coin_changed.emit(msg.get("coin") or "")
+        elif kind == "instruments":
+            self.instruments_changed.emit(msg)
 
     def _request(self, method: str, path: str, body: dict | None = None) -> None:
         async def go() -> None:

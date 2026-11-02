@@ -108,12 +108,14 @@ jobs:
           $envFile = Join-Path $env:RADAR_HOME '.env'
           [System.IO.File]::WriteAllText($envFile, "# Existing user configuration`n")
           $envHash = (Get-FileHash -LiteralPath $envFile -Algorithm SHA256).Hash
-          $oldApp = Start-Process -FilePath (Join-Path $installRoot 'ManipulationRadar.exe') -WindowStyle Hidden -PassThru -ArgumentList '--demo', '--selftest', '20'
+          $oldApp = Start-Process -FilePath (Join-Path $installRoot 'ManipulationRadar.exe') -WindowStyle Hidden -PassThru -ArgumentList '--demo', '--selftest', '30'
           # The updater waits for the old app to exit before touching its files. NORUN avoids
           # starting a real exchange session after this CI-only upgrade.
           $p = Start-Process -FilePath $installer -WindowStyle Hidden -PassThru -Wait -ArgumentList '/VERYSILENT', '/SP-', '/NORESTART', '/NORUN=1', '/RADARUPDATE=1', "/RADARPID=$($oldApp.Id)", "/DIR=`"$installRoot`""
           if ($p.ExitCode -ne 0) { throw "Upgrade failed: $($p.ExitCode)" }
           $oldApp.WaitForExit()
+          Get-Content -LiteralPath (Join-Path $env:RADAR_HOME 'selftest.json') -ErrorAction SilentlyContinue
+          Get-Content -LiteralPath (Join-Path $env:RADAR_HOME 'radar.log') -Tail 12 -ErrorAction SilentlyContinue
           if ($oldApp.ExitCode -ne 0) { throw "Installed application smoke test failed: $($oldApp.ExitCode)" }
           if ((Get-FileHash -LiteralPath $prefsFile -Algorithm SHA256).Hash -ne $prefsHash) { throw 'User preferences changed during upgrade' }
           if ((Get-FileHash -LiteralPath $envFile -Algorithm SHA256).Hash -ne $envHash) { throw 'User .env changed during upgrade' }
