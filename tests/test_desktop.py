@@ -191,10 +191,47 @@ def test_extra_coins_load_dedup_and_limit(tmp_path):
         {"coin": "bad-1"},  # not a ticker
         "junk",
         {"coin": "SOL"},
-        {"coin": "WIF"},  # over the limit of two extra coins
+        {"coin": "WIF"},
     ]}), "utf-8")
     p = Prefs.load(path)
-    assert [e.coin for e in p.extra] == ["PEPE", "SOL"]
+    assert [e.coin for e in p.extra] == ["PEPE", "SOL", "WIF"]
     assert p.extra[0].visible is False and p.extra[0].overlay.keys == ["MEXC:spot"] and p.extra[0].overlay.min_usd == 500
     p.save(path)
-    assert [e.coin for e in Prefs.load(path).extra] == ["PEPE", "SOL"]
+    assert [e.coin for e in Prefs.load(path).extra] == ["PEPE", "SOL", "WIF"]
+
+
+def test_module_overlays_validate_all_module_types_and_keep_bound_instrument(tmp_path):
+    from desktop.module_overlay import TYPES, overlay_request
+    records = {}
+    for kind in TYPES:
+        spec = {"id":kind,"type":kind,"rect":{"x":0,"y":0,"w":0.5,"h":0.5},
+                "settings":{"minUsd":1200,"oiKey":"Binance:perp","unit":"usd"}}
+        value = overlay_request(json.dumps({"coin":"btc","module":spec}))
+        assert value["coin"] == "BTC" and value["module"]["settings"] == spec["settings"]
+        records[f"BTC:{kind}"] = {**value,"visible":True,"locked":kind=="tape","geometry":"aabb"}
+    prefs = Prefs(module_overlays=records)
+    path = tmp_path / "prefs.json"
+    prefs.save(path)
+    assert Prefs.load(path).module_overlays == records
+    with pytest.raises(ValueError):
+        overlay_request(json.dumps({"coin":"BAD-COIN","module":spec}))
+    with pytest.raises(ValueError):
+        overlay_request(json.dumps({"coin":"BTC","module":{**spec,"type":"unknown"}}))
+
+
+def test_module_overlay_click_through_is_independent_and_preserves_geometry(qapp):
+    from types import SimpleNamespace
+    from PySide6.QtGui import QIcon
+    from desktop.module_overlay import ModuleOverlay
+    ctl = SimpleNamespace(app=qapp, icon=QIcon(), prefs=Prefs(), overlay_state_changed=lambda: None)
+    record = {"coin":"BTC","module":{"type":"tape","id":"a","settings":{}}}
+    first, second = ModuleOverlay(ctl,"BTC:a",dict(record)), ModuleOverlay(ctl,"BTC:b",dict(record))
+    first.setGeometry(100, 100, 400, 250)
+    before = first.geometry()
+    first.set_locked(True)
+    assert first.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    assert not second.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    assert first.geometry() == before
+    first.set_locked(False)
+    assert not first.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    first.close(); second.close()

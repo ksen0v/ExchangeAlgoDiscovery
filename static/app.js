@@ -66,6 +66,8 @@ const S = {
   venues: [],
   venueSelection: {},
   watch: [],
+  instruments: [],
+  coinCache: new Map(),
   telegram: false,
   streams: [],
   selected: new Set(store.get("selected", [])),
@@ -73,7 +75,7 @@ const S = {
   tapeMinByCoin: store.get("tapeMinByCoin", {}),
   side: "all",
   paused: false,
-  sound: store.get("sound", true),
+  sound: !window.radarOverlay && store.get("sound", true),
   hideQuiet: store.get("hideQuiet", false),
   tab: store.get("tab", "alerts"),
   unseenWalls: 0,
@@ -251,7 +253,7 @@ function addWalls(rows) {S.walls=rows.slice().reverse().concat(S.walls).slice(0,
 async function loadWalls() {
   if(!window.Desk?.has('walls'))return;
   const coin=S.coin,request=++S.wallRequest;
-  try {const rows=await api('/api/walls?limit=150');if(coin!==S.coin||request!==S.wallRequest)return;
+  try {const rows=await api('/api/walls?limit=150&coin='+encodeURIComponent(coin));if(coin!==S.coin||request!==S.wallRequest)return;
     const seen=new Set();renderWalls([...S.walls,...rows].filter(row=>{const key=JSON.stringify([row.ts,row.key,row.event,row.price,row.usd]);if(seen.has(key))return false;seen.add(key);return true;}).sort((a,b)=>b.ts-a.ts));
   }catch{/* existing live wall events remain */}
 }
@@ -282,26 +284,60 @@ $("soundBtn").addEventListener("click", () => { S.sound = !S.sound; store.set("s
 // ---------- coin ----------
 function setCoin(coin) {
   if(coin===S.coin)return;
+  if(S.coin)S.coinCache.set(S.coin,{tape:S.tape,alerts:S.alerts,walls:S.walls,streams:S.streams,snap:window.A?.snap,price:$('consensus').textContent});
+  // Only visited instruments have a tape cache; bound inactive UI memory independently of the watchlist.
+  while(S.coinCache.size>8)S.coinCache.delete(S.coinCache.keys().next().value);
+  const cached=S.coinCache.get(coin);S.coinCache.delete(coin);
   S.coin=coin;$('coinLabel').textContent=coin;$('coinInput').placeholder=coin;document.title=coin+' · Manipulation Radar';
-  S.tape=[];S.alerts=[];S.walls=[];S.alertRequest++;S.wallRequest++;
-  if(window.A)A.snap=null;window.resetOiChart?.();S.selected.clear();store.set('selected',[]);
+  S.tape=cached?.tape||[];S.alerts=cached?.alerts||[];S.walls=cached?.walls||[];S.streams=cached?.streams||[];S.alertRequest++;S.wallRequest++;
+  $('consensus').textContent=cached?.price||'—';
+  if(window.A)A.snap=cached?.snap||null;window.resetOiChart?.();S.selected.clear();store.set('selected',[]);
   window.Desk?.resetCoin();sendFilter();loadAlerts();loadWalls();
+  if(window.A&&window.Desk?.filter().analytics)api('/api/analytics?coin='+encodeURIComponent(coin)).then(onAnalytics).catch(()=>{});
 }
 
+const Instruments={busy:false,target:null};
+async function selectInstrument(coin){
+  Instruments.target=coin;
+  if(Instruments.busy)return;
+  Instruments.busy=true;
+  try{while(Instruments.target){const wanted=Instruments.target;Instruments.target=null;
+    const selected=await api('/api/coin',{method:'POST',body:JSON.stringify({coin:wanted})});
+    if(!Instruments.target)setCoin(selected.coin);
+  }}finally{Instruments.busy=false;}
+}
+function renderInstruments(){
+  const list=$('instrumentList');
+  const structure=JSON.stringify(S.instruments.map(i=>[i.coin,i.coin===S.coin]));
+  if(list.dataset.structure!==structure){
+    list.dataset.structure=structure;
+    list.innerHTML=S.instruments.map(i=>`<div class="instrument-entry ${i.coin===S.coin?'active':''}"><button class="instrument-link" data-instrument="${esc(i.coin)}" ${i.coin===S.coin?'aria-current="true"':''}><span class="instrument-symbol">${esc(i.coin.slice(0,1))}</span><span><b>${esc(i.coin)}</b><small data-instrument-price="${esc(i.coin)}">—</small></span><i class="instrument-status" data-instrument-status="${esc(i.coin)}"></i></button><button class="icon-button instrument-remove" data-remove-instrument="${esc(i.coin)}" aria-label="Убрать ${esc(i.coin)}" ${S.instruments.length<2?'disabled':''}>×</button></div>`).join('');
+  }
+  for(const i of S.instruments){const price=list.querySelector(`[data-instrument-price="${i.coin}"]`),status=list.querySelector(`[data-instrument-status="${i.coin}"]`);if(price)price.textContent=fmtPrice(i.price);if(status){status.classList.toggle('live',i.live>0);status.setAttribute('aria-label',`Биржевых потоков: ${i.live||0} / ${i.total||0}`);}}
+}
+$('addInstrumentBtn').addEventListener('click',()=>{$('coinForm').reset();$('instrumentDlg').showModal();$('coinInput').focus();});
+$('instrumentList').addEventListener('click',e=>{const remove=e.target.closest('[data-remove-instrument]'),select=e.target.closest('[data-instrument]');
+  if(remove){const coin=remove.dataset.removeInstrument;$('removeInstrumentDlg').dataset.coin=coin;$('removeInstrumentText').textContent=`${coin}: потоки и оверлеи будут закрыты. Монету можно добавить снова; настройки бирж и фильтров сохранятся.`;$('removeInstrumentDlg').showModal();}
+  else if(select)selectInstrument(select.dataset.instrument).catch(error=>toast(error.message));
+});
+$('removeInstrumentForm').addEventListener('submit',async e=>{e.preventDefault();const coin=$('removeInstrumentDlg').dataset.coin;
+  try{const data=await api('/api/instruments/'+encodeURIComponent(coin),{method:'DELETE'});S.coinCache.delete(coin);S.instruments=data.coins;setCoin(data.selected);renderInstruments();$('removeInstrumentDlg').close();}catch(error){toast(error.message);}
+});
 $("coinForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const coin = $("coinInput").value.trim().toUpperCase();
   if (!coin) return;
   try {
-    await api("/api/coin", { method: "POST", body: JSON.stringify({ coin }) });
+    $('addInstrumentSubmit').disabled=true;
+    await selectInstrument(coin);
+    const data=await api('/api/instruments');S.instruments=data.coins;renderInstruments();
     $("coinInput").value = "";
-    S.streams = [];
-    setCoin(coin);
+    $('instrumentDlg').close();
     renderStreams();
-    toast(`Переключаемся на ${coin}…`);
+    toast(`${coin} добавлен в инструменты`);
   } catch (err) {
     toast(err.message);
-  }
+  }finally{$('addInstrumentSubmit').disabled=false;}
 });
 
 // Per-coin collection settings (independent of tape display filters).
@@ -418,7 +454,7 @@ $("tgTest").addEventListener("click", async () => {
 
 // ---------- websocket ----------
 function sendFilter() {
-  if(S.ws&&S.ws.readyState===1){const filter=window.Desk?window.Desk.filter():{tape:false,walls:false,analytics:false,lite:true};S.ws.send(JSON.stringify({type:'filter',...filter}));}
+  if(S.ws&&S.ws.readyState===1){const filter=window.Desk?window.Desk.filter():{tape:false,walls:false,analytics:false,lite:true};S.ws.send(JSON.stringify({type:'filter',coin:S.coin,...filter}));}
 }
 
 function connect() {
@@ -429,18 +465,22 @@ function connect() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === "snapshot") {
-      if (msg.coin !== S.coin) setCoin(msg.coin);
+      if(msg.instruments){S.instruments=msg.instruments;renderInstruments();}
+      if (msg.coin !== S.coin) return;
       S.streams = msg.streams;
       $("consensus").textContent = fmtPrice(msg.consensus);
       renderStreams();
     } else if (msg.type === "trades") {
-      addTrades(msg.rows);
+      addTrades(msg.rows.filter(row=>row.coin===S.coin));
     } else if (msg.type === "walls") {
-      addWalls(msg.rows);
+      addWalls(msg.rows.filter(row=>row.coin===S.coin));
     } else if (msg.type === "alert") {
       if (msg.alert.coin === S.coin) addAlert(msg.alert);
     } else if (msg.type === "coin") {
-      setCoin(msg.coin);
+      if(!window.radarOverlay&&!Instruments.busy)setCoin(msg.coin);
+    } else if(msg.type==='instruments'){
+      S.instruments=msg.coins||[];renderInstruments();
+      if(window.radarOverlay&&!S.instruments.some(i=>i.coin===S.coin)){S.streams=[];S.tape=[];if(window.A)A.snap=null;Desk.resetCoin();toast('Инструмент удалён из списка');}
     } else if (msg.type === "analytics") {
       onAnalytics(msg);
     } else if (msg.type === "watch") {
@@ -461,10 +501,11 @@ async function init() {
     S.config = st.config;
     S.venues = st.venues;
     S.watch = st.watch || [];
+    S.instruments=st.instruments||[{coin:st.coin}];
     S.venueSelection = st.venue_selection || {};
     S.telegram = st.telegram;
     $("demoBadge").hidden = !st.demo;
-    setCoin(st.coin);
+    setCoin(window.radarOverlay?.coin||st.coin);renderInstruments();
   } catch (err) {
     toast("Сервер недоступен: " + err.message);
   }

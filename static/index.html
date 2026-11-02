@@ -11,25 +11,19 @@
 <body>
 <header class="topbar">
   <div class="brand"><span class="radar-mark" aria-hidden="true">◎</span> Manipulation&nbsp;Radar <span id="demoBadge" class="demo" hidden title="Сделки сгенерированы (DEMO=1), это не реальные биржи">ДЕМО</span></div>
-  <form id="coinForm" class="coin-form" autocomplete="off">
-    <input id="coinInput" placeholder="Тикер, например PEPE" maxlength="20" spellcheck="false" aria-label="Тикер монеты">
-    <button type="submit">Мониторить</button>
-  </form>
   <nav class="views" aria-label="Экраны">
     <button class="view-btn" data-view="dashboard">Модульный стол</button>
     <button class="view-btn" data-view="health" title="Связь с биржами и доступность открытого интереса">Подключения</button>
   </nav>
   <div class="meta">
     <span class="coin" id="coinLabel">—</span>
-    <span class="muted">консенсус</span> <span id="consensus" class="num">—</span>
-    <span class="muted">потоков</span> <span id="liveCount" class="num">—</span>
+    <span id="consensus" class="num">—</span>
+    <span id="liveCount" class="num muted">—</span>
   </div>
   <div class="actions">
-    <button id="themeBtn" class="ghost" aria-label="Переключить тему">Светлая тема</button>
-    <button id="soundBtn" class="ghost" title="Звук алертов">🔔 Звук</button>
     <button id="venuesBtn" class="ghost">Биржи монеты</button>
-    <button id="settingsBtn" class="ghost">⚙ Настройки</button>
     <span id="conn" class="conn off" title="Связь с сервером">●</span>
+    <button id="appMenuBtn" class="icon-button" aria-label="Меню приложения" aria-haspopup="menu" aria-expanded="false">☰</button>
   </div>
 </header>
 
@@ -37,7 +31,7 @@
   <aside class="workspace-sidebar">
     <div class="sidebar-heading"><h2>Рабочие пространства</h2><button id="newWorkspaceBtn" class="icon-button" aria-label="Создать рабочее пространство">+</button></div>
     <nav id="workspaceList" class="workspace-list" aria-label="Рабочие пространства"></nav>
-    <div class="sidebar-section"><h2>Инструмент</h2><strong id="deskCoin" class="desk-coin">—</strong><span id="deskPrice" class="desk-price num">—</span><span class="muted small">USDT · основная монета</span></div>
+    <div class="sidebar-section instruments-section"><div class="sidebar-heading"><h2>Инструменты</h2><button id="addInstrumentBtn" class="icon-button" aria-label="Добавить монету">+</button></div><nav id="instrumentList" class="instrument-list" aria-label="Монеты"></nav></div>
     <div class="sidebar-section"><div class="sidebar-heading"><h2>Подключения</h2><button id="sidebarVenuesBtn" class="icon-button" aria-label="Выбрать биржи">↗</button></div><div id="deskConnections" class="desk-connections"></div></div>
     <div class="sidebar-bottom"><span class="connection-dot"></span><span id="workspaceSaveStatus" role="status">Компоновка сохраняется</span><span class="muted small">Manipulation Radar <span id="appVersion">1.0.0</span></span></div>
   </aside>
@@ -253,7 +247,19 @@
 <div id="toast" class="toast" hidden></div>
 <div id="modulePicker" class="module-picker floating-menu" role="dialog" aria-label="Добавить модуль" hidden><div class="picker-heading"><div><h2>Добавить модуль</h2><p>Можно разместить несколько экземпляров</p></div><button class="icon-button" data-close-picker aria-label="Закрыть меню">×</button></div><div id="moduleCatalog" class="module-catalog"></div></div>
 <div id="workspaceMenu" class="floating-menu context-menu" role="menu" aria-label="Рабочее пространство" hidden><button role="menuitem" data-space-action="rename">Переименовать</button><button role="menuitem" data-space-action="duplicate">Создать копию</button><button role="menuitem" data-space-action="create">Новое пространство</button><button role="menuitem" data-space-action="delete" class="danger">Удалить пространство</button></div>
-<div id="moduleMenu" class="floating-menu context-menu" role="menu" aria-label="Модуль" hidden><button role="menuitem" data-module-action="rename">Переименовать</button><button role="menuitem" data-module-action="duplicate">Дублировать модуль</button><button role="menuitem" data-module-action="remove" class="danger">Удалить модуль</button></div>
+<div id="moduleMenu" class="floating-menu context-menu" role="menu" aria-label="Модуль" hidden>
+  <button role="menuitem" data-module-action="overlay" data-native>↗ Разместить оверлей</button>
+  <button role="menuitemcheckbox" aria-checked="false" data-module-action="lock" data-native>Сквозные клики</button>
+  <button role="menuitem" data-module-action="closeOverlay" data-native>Закрыть оверлей</button>
+  <hr data-native>
+  <button role="menuitem" data-module-action="rename">Переименовать</button><button role="menuitem" data-module-action="duplicate">Дублировать модуль</button><button role="menuitem" data-module-action="remove" class="danger">Удалить модуль</button>
+</div>
+<div id="appMenu" class="floating-menu context-menu app-menu" role="menu" aria-label="Приложение" hidden>
+  <button id="themeBtn" role="menuitem">Светлая тема</button><button id="soundBtn" role="menuitem">Звук</button><button id="settingsBtn" role="menuitem">Настройки анализа</button>
+  <hr data-native><button role="menuitem" data-desktop-action="updates" data-native>Проверить обновления</button><button role="menuitem" data-desktop-action="connection" data-native>Подключение и горячие клавиши</button><button role="menuitem" data-desktop-action="unlock" data-native>Отключить сквозные клики у всех</button><button role="menuitem" data-desktop-action="overlays" data-native>Оверлеи…</button><button role="menuitem" data-desktop-action="data" data-native>Папка данных</button><button role="menuitem" data-desktop-action="browser" data-native>Открыть в браузере</button>
+</div>
+<dialog id="instrumentDlg"><form id="coinForm" autocomplete="off"><h3>Добавить инструмент</h3><label>Тикер монеты<input id="coinInput" placeholder="Например BTC или PEPE" maxlength="20" pattern="[A-Za-z0-9]{1,20}" required spellcheck="false" aria-label="Тикер монеты"></label><p class="muted small">USDT · биржи можно настроить отдельно для каждой монеты.</p><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button id="addInstrumentSubmit" type="submit">Добавить</button></div></form></dialog>
+<dialog id="removeInstrumentDlg"><form id="removeInstrumentForm"><h3>Убрать инструмент?</h3><p id="removeInstrumentText"></p><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit" class="danger">Убрать</button></div></form></dialog>
 <dialog id="workspaceNameDlg"><form id="workspaceNameForm"><h3 id="workspaceNameTitle">Новое рабочее пространство</h3><label>Название<input id="workspaceNameInput" maxlength="80" required autocomplete="off"></label><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit">Сохранить</button></div></form></dialog>
 <dialog id="deleteWorkspaceDlg"><form id="deleteWorkspaceForm"><h3>Удалить рабочее пространство?</h3><p id="deleteWorkspaceText"></p><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit" class="danger">Удалить</button></div></form></dialog>
 <script src="/static/workspace-model.js"></script>

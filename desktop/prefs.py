@@ -61,9 +61,6 @@ class ExtraOverlay:
     overlay: OverlayPrefs = field(default_factory=OverlayPrefs)
 
 
-MAX_EXTRA = 2  # three coins in total, as on the server (app.manager.MAX_WATCH)
-
-
 @dataclass
 class Prefs:
     mode: str = "local"  # local: exchanges are polled from this PC | remote: connect to a server
@@ -80,6 +77,7 @@ class Prefs:
     main_geometry: str = ""
     theme: str = "dark"
     metric_overlays: dict = field(default_factory=dict)
+    module_overlays: dict = field(default_factory=dict)
     hotkey_overlay: str = "ctrl+alt+t"
     hotkey_lock: str = "ctrl+alt+l"
     overlay: OverlayPrefs = field(default_factory=OverlayPrefs)
@@ -104,7 +102,7 @@ class Prefs:
             _fill(e, item)
             _fill(e.overlay, item.get("overlay") or {})
             e.coin = e.coin.strip().upper()
-            if e.coin.isalnum() and e.coin not in [x.coin for x in p.extra] and len(p.extra) < MAX_EXTRA:
+            if e.coin.isascii() and e.coin.isalnum() and len(e.coin) <= 20 and e.coin not in [x.coin for x in p.extra]:
                 p.extra.append(e)
         return p
 

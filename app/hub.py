@@ -76,8 +76,7 @@ class Client:
         return self.min_by_key.get(key, self.min_usd)
 
     def wants_wall(self, event: dict, primary: str = "") -> bool:
-        # walls are analysed for the main coin only
-        return self.walls and self.follows(primary, primary) and (self.keys is None or event["key"] in self.keys)
+        return self.walls and self.follows(event.get("coin") or primary, primary) and (self.keys is None or event["key"] in self.keys)
 
     def offer(self, text: str) -> None:
         try:
@@ -117,33 +116,27 @@ class Hub:
                 c.offer(text)
 
     def broadcast_snapshot(self, msg: dict, watched: dict[str, dict] | None = None) -> None:
-        """Main-coin snapshot to its clients; clients of a watched coin get that coin's snapshot."""
-        if not self.clients:
-            return
-        full = lite = None
-        other: dict[str, str] = {}
+        snapshots = {**(watched or {}), msg["coin"]: msg}
+        encoded = {}
         for c in list(self.clients):
-            if c.coin and c.coin != msg.get("coin"):
-                if watched and c.coin in watched:
-                    if c.coin not in other:
-                        other[c.coin] = orjson.dumps(watched[c.coin]).decode()
-                    c.offer(other[c.coin])
+            coin = c.coin or self.primary
+            snapshot = snapshots.get(coin)
+            if snapshot is None:
                 continue
-            if c.lite:
-                if lite is None:
-                    rows = [{k: r.get(k) for k in LITE_FIELDS} for r in msg["streams"]]
-                    lite = orjson.dumps({**msg, "streams": rows}).decode()
-                c.offer(lite)
-            else:
-                if full is None:
-                    full = orjson.dumps(msg).decode()
-                c.offer(full)
+            key = (coin, c.lite)
+            if key not in encoded:
+                data = {**snapshot, "streams": [{k: row.get(k) for k in LITE_FIELDS} for row in snapshot["streams"]]} if c.lite else snapshot
+                encoded[key] = orjson.dumps(data).decode()
+            c.offer(encoded[key])
 
     def broadcast_main(self, msg: dict, analytics_only: bool = False) -> None:
-        """To the clients of the main coin (module snapshots are for the main coin only)."""
+        self.broadcast_coin(msg, self.primary, analytics_only)
+
+    def broadcast_coin(self, msg: dict, coin: str, analytics_only: bool = False) -> None:
+        """Serialize a coin's snapshot only if a client actually needs it."""
         text = None
         for c in list(self.clients):
-            if not c.follows(self.primary, self.primary) or (analytics_only and not c.analytics):
+            if not c.follows(coin, self.primary) or (analytics_only and not c.analytics):
                 continue
             if text is None:
                 text = orjson.dumps(msg).decode()
