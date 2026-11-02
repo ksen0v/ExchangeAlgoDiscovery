@@ -33,7 +33,7 @@ class RadarChart {
       e.preventDefault();
       if (e.key === "Home") this.live();
       else if (e.key === "+" || e.key === "=" || e.key === "-") this.zoom(e.key === "-" ? 1.25 : .8, .5);
-      else { this.follow = false; this.end += this.span * (e.key === "ArrowLeft" ? -.15 : .15); this.bound(); this.request(); }
+      else { this.span = this.viewSpan(); this.follow = false; this.end += this.span * (e.key === "ArrowLeft" ? -.15 : .15); this.bound(); this.request(); }
     });
     this.observer = new ResizeObserver(() => this.request());
     this.observer.observe(el);
@@ -54,6 +54,11 @@ class RadarChart {
     this.request();
   }
   latest() { return this.options.now || this.points[this.points.length - 1]?.[0] || Date.now() / 1000; }
+  viewSpan() {
+    // A newly selected coin has seconds of observations, not a fabricated day of history.
+    // Fit those observations while following; expand up to the chosen range as data arrives.
+    return this.follow && this.points.length ? Math.min(this.span, Math.max(60, this.latest() - this.points[0][0] + 5)) : this.span;
+  }
   live(span) {
     if (span) this.span = span;
     this.follow = true;
@@ -66,6 +71,7 @@ class RadarChart {
   bound() {
     const first = this.points[0]?.[0];
     if (first == null) return;
+    if (this.follow) { this.end = this.latest(); return; }
     this.span = Math.max(30, Math.min(86400, this.span));
     this.end = Math.max(first + Math.min(30, this.span), Math.min(this.latest() + this.span * .15, this.end));
   }
@@ -73,7 +79,7 @@ class RadarChart {
   down(e) {
     if (e.button !== 0 || !this.plot) return;
     const p = this.xy(e);
-    this.drag = {id: e.pointerId, ...p, end: this.end, scale: this.yZoom, axis: p.x > this.plot.R};
+    this.drag = {id: e.pointerId, ...p, end: this.end, span: this.viewSpan(), scale: this.yZoom, axis: p.x > this.plot.R};
     this.cross.setPointerCapture(e.pointerId);
     this.cross.classList.add("dragging");
     this.tip.hidden = true;
@@ -85,7 +91,7 @@ class RadarChart {
     if (this.drag) {
       if (e.pointerId !== this.drag.id) return;
       if (this.drag.axis) this.yZoom = Math.max(.05, Math.min(30, this.drag.scale * Math.exp((this.pointer.y - this.drag.y) / 130)));
-      else { this.follow = false; this.end = this.drag.end - (this.pointer.x - this.drag.x) * this.span / (this.plot.R - this.plot.L); this.bound(); }
+      else { this.span = this.drag.span; this.follow = false; this.end = this.drag.end - (this.pointer.x - this.drag.x) * this.span / (this.plot.R - this.plot.L); this.bound(); }
       this.request();
     } else this.request(false);
   }
@@ -104,6 +110,7 @@ class RadarChart {
       this.yZoom = Math.max(.05, Math.min(30, this.yZoom * Math.exp(e.deltaY * .002)));
       this.request();
     } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      this.span = this.viewSpan();
       this.follow = false;
       this.end += (e.deltaX || e.deltaY) * this.span / (this.plot.R - this.plot.L);
       this.bound(); this.request();
@@ -111,7 +118,7 @@ class RadarChart {
       Math.max(0, Math.min(1, (p.x - this.plot.L) / (this.plot.R - this.plot.L))));
   }
   zoom(factor, anchor) {
-    const old = this.span;
+    const old = this.viewSpan();
     this.span = Math.max(30, Math.min(86400, old * factor));
     this.end += (this.span - old) * (1 - anchor);
     this.follow = false;
@@ -150,13 +157,13 @@ class RadarChart {
     ctx.font = "10px Consolas, monospace";
     ctx.clearRect(0, 0, W, H);
     const L = 8, R = Math.max(50, W - 86), T = 10, B = H - 26;
-    const start = this.end - this.span;
-    const xs = t => L + (t - start) / this.span * (R - L);
-    this.plot = {L, R, T, B, xs, start};
+    const span = this.viewSpan(), start = this.end - span;
+    const xs = t => L + (t - start) / span * (R - L);
+    this.plot = {L, R, T, B, xs, start, span};
     const series = this.options.series || [];
     const panes = Math.max(1, ...series.map(s => (s.pane || 0) + 1));
     const paneHeight = (B - T) / panes;
-    const visible = this.points.filter((p, i, a) => p[0] <= this.end + this.span * .05 &&
+    const visible = this.points.filter((p, i, a) => p[0] <= this.end + span * .05 &&
       (p[0] >= start || a[i + 1]?.[0] >= start));
     this.scales = [];
     for (let pane = 0; pane < panes; pane++) {
@@ -203,9 +210,9 @@ class RadarChart {
         ctx.restore();
       }
     }
-    const timeFormat = t => new Date(t * 1000).toLocaleTimeString("ru-RU", {hour:"2-digit", minute:"2-digit", ...(this.span < 300 ? {second:"2-digit"} : {})});
+    const timeFormat = t => new Date(t * 1000).toLocaleTimeString("ru-RU", {hour:"2-digit", minute:"2-digit", ...(span < 300 ? {second:"2-digit"} : {})});
     for (let i = 0; i <= 4; i++) {
-      const t = start + this.span * i / 4, x = xs(t);
+      const t = start + span * i / 4, x = xs(t);
       ctx.strokeStyle = this.colors.line; ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, B); ctx.stroke();
       ctx.fillStyle = this.colors.muted; ctx.textAlign = i === 0 ? "left" : i === 4 ? "right" : "center";
       ctx.fillText(timeFormat(t), x, H - 8);
@@ -228,13 +235,13 @@ class RadarChart {
     if (!p || !box || this.drag || p.x < box.L || p.x > box.R || p.y < box.T || p.y > box.B || !this.points.length) {
       this.tip.hidden = true; return;
     }
-    const t = box.start + (p.x - box.L) / (box.R - box.L) * this.span;
+    const t = box.start + (p.x - box.L) / (box.R - box.L) * box.span;
     let lo = 0, hi = this.points.length - 1;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (this.points[mid][0] < t) lo = mid + 1; else hi = mid; }
     let row = this.points[lo];
     if (lo && Math.abs(this.points[lo - 1][0] - t) < Math.abs(row[0] - t)) row = this.points[lo - 1];
     const x = box.xs(row[0]);
-    if (x < box.L || x > box.R || Math.abs(row[0] - t) > Math.max(this.options.maxGap || 90, this.span * .04)) { this.tip.hidden = true; return; }
+    if (x < box.L || x > box.R || Math.abs(row[0] - t) > Math.max(this.options.maxGap || 90, box.span * .04)) { this.tip.hidden = true; return; }
     ctx.strokeStyle = this.colors.muted; ctx.lineWidth = .7; ctx.setLineDash([3, 4]);
     ctx.beginPath(); ctx.moveTo(x, box.T); ctx.lineTo(x, box.B); ctx.moveTo(box.L, p.y); ctx.lineTo(box.R, p.y); ctx.stroke();
     ctx.setLineDash([]);

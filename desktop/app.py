@@ -923,6 +923,12 @@ class Controller(QObject):
     def selftest(self) -> None:
         # CI's virtual display is small; render a full desktop workspace for the artifact.
         self.main.resize(1560, 940)
+        QTimer.singleShot(200, self._selftest_viewport)
+
+    def _selftest_viewport(self) -> None:
+        # Windows runners cap top-level windows at their 1024px virtual monitor.
+        # Test the wide CSS viewport through browser zoom, without changing the user's layout.
+        self.main.web.setZoomFactor(min(1.0, self.main.web.width() / 1560))
         QTimer.singleShot(300, self._selftest_inspect)
 
     def _selftest_inspect(self) -> None:
