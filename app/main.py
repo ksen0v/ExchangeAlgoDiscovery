@@ -10,10 +10,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from starlette.requests import HTTPConnection
 
-from app.analytics.engine import OI_CHART_WINDOWS, Analytics
+from app.analytics.engine import OI_CHART_WINDOWS, OI_TOTAL, Analytics
 from app.collectors.base import http_session
 from app.config import VENUES, settings
 from app.detector import LIMITS, Detector, DetectorConfig
@@ -22,6 +22,7 @@ from app.hub import Client, Hub
 from app.manager import MAX_WATCH, Manager
 from app.storage import Storage
 from app.telegram import Telegram, format_alert
+from app.workspaces import Layout
 
 logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("ccxt").setLevel(logging.WARNING)
@@ -205,6 +206,37 @@ async def get_state() -> dict:
     }
 
 
+@app.get("/api/version")
+async def get_version() -> dict:
+    from desktop.version import VERSION
+    return {"version": VERSION}
+
+
+@app.get("/api/workspaces")
+async def get_workspaces():
+    saved = await S.storage.get("workspaces.v1", None)
+    if saved is None:
+        return None
+    try:
+        return Layout.model_validate(saved).model_dump(mode="json")
+    except ValidationError:
+        log.warning("Invalid saved workspace layout; retaining the stored copy for recovery")
+        return None
+
+
+@app.put("/api/workspaces")
+async def put_workspaces(request: Request):
+    raw = await request.body()
+    if len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Слишком большой набор рабочих пространств")
+    try:
+        layout = Layout.model_validate_json(raw)
+    except ValidationError as error:
+        raise HTTPException(422, "Некорректная компоновка рабочего пространства") from error
+    await S.storage.set("workspaces.v1", layout.model_dump(mode="json"))
+    return {"updatedAt": layout.updatedAt}
+
+
 class CoinIn(BaseModel):
     coin: str
 
@@ -327,12 +359,12 @@ async def get_oi_history(key: str, coin: str, seconds: int = 3600) -> dict:
     if coin.strip().upper() != S.manager.coin:
         raise HTTPException(409, "Основная монета изменилась")
     stream = S.manager.streams.get(key)
-    if stream is None or stream.kind != "perp":
+    if key != OI_TOTAL and (stream is None or stream.kind != "perp"):
         raise HTTPException(404, "Фьючерсная биржа не включена для этой монеты")
     if seconds not in OI_CHART_WINDOWS:
         raise HTTPException(400, "Период графика: 15 минут, 1 час, 4 часа или 24 часа")
     series = S.analytics.oi_series(key, time.time(), seconds)
-    series["stale"] = series["stale"] or stream.status not in ("live", "polling")
+    series["stale"] = series["stale"] or (key != OI_TOTAL and stream.status not in ("live", "polling"))
     return series
 
 

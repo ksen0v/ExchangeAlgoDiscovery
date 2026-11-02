@@ -30,6 +30,25 @@ def test_oi_coins_units():
     # 1000PEPE contract: coins of 1000PEPE x 1000 = PEPE
     assert oi_coins({"openInterestAmount": 3}, m, "bybit", 0.012, mult=1000) == 3000
     assert oi_coins({}, m, "bybit", 2.0) is None
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":.01}, "kucoinfutures", 2) == .5
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":10}, "gate", 2) == 500
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":1,"inverse":True}, "gate", 2) == 25
+    assert oi_coins({"openInterestAmount":50}, {"contractSize":1,"inverse":True}, "gate", None) is None
+
+
+def test_gate_current_oi_uses_single_contract_endpoint_without_history():
+    import asyncio
+    from types import SimpleNamespace
+    from app.analytics.derivs import CcxtDerivFeed
+
+    class Gate:
+        async def public_futures_get_settle_contracts_contract(self, params):
+            assert params == {"settle":"usdt", "contract":"XYZ_USDT"}
+            return {"position_size":"250", "mark_price":"2"}
+
+    stream = SimpleNamespace(key="Gate:perp", ex_id="gate", market={"settleId":"usdt", "id":"XYZ_USDT"})
+    raw = asyncio.run(CcxtDerivFeed(stream, None)._fetch(Gate()))
+    assert oi_coins(raw, {"contractSize":.1}, "gate", 2) == 25
 
 
 def test_cvd_excludes_seed_but_delta_includes_it():
@@ -101,3 +120,42 @@ def test_oi_history_is_bounded_and_out_of_order_values_are_ignored():
     assert len(a.oi_history["A:perp"]) <= 1441
     assert len(a.oi_grid["A:perp"]) <= 724
     assert a.oi_last["A:perp"][1] == 100
+
+
+def test_oi_table_discovers_any_connected_venue_without_empty_templates():
+    a = Analytics()
+    streams = {f"Venue{i}:perp": FakeStream(f"Venue{i}", "perp") for i in range(12)}
+    for s in streams.values():
+        s.status = "live"
+    for key in list(streams)[:8]:
+        a.oi(key, 1000, 10, 20)
+    streams["Venue0:perp"].status = "connecting"
+    oi = a.snapshot(1001, streams)["oi"]
+    assert {r["key"] for r in oi["venues"]} == {f"Venue{i}:perp" for i in range(1, 8)}
+    assert oi["totals"]["count"] == 7 and oi["totals"]["coins"] == 70
+    assert len(a.feed_status(streams, 1001)) == 12  # diagnostics retain failed / waiting venues
+
+
+def test_total_oi_history_marks_changes_in_exchange_coverage():
+    a = Analytics()
+    one, two = FakeStream("One", "perp"), FakeStream("Two", "perp")
+    one.status = two.status = "live"
+    streams = {one.key:one, two.key:two}
+    a.oi(one.key, 1000, 10, 20)
+    a.tick(1001, 2, streams)
+    a.oi(two.key, 1005, 50, 100)
+    a.tick(1006, 2, streams)
+    points = a.oi_series("__total__", 1007, 900)["points"]
+    assert [p[1] for p in points] == [10, 60]
+    assert points[0][3] != points[1][3]
+    a.tick(1070, 2, streams)  # stale observations never become a new zero-valued sample
+    assert a.oi_series("__total__", 1070, 900)["stale"]
+
+
+def test_missing_oi_price_does_not_turn_a_partial_usd_total_into_full_coverage():
+    a = Analytics()
+    s = FakeStream(kind="perp")
+    s.status = "live"
+    a.oi(s.key, 1000, 100, None)
+    total = a.snapshot(1001, {s.key:s})["oi"]["totals"]
+    assert total["coins"] == 100 and total["usd"] is None

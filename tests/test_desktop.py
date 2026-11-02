@@ -32,6 +32,41 @@ def test_overlay_preserves_estimated_side_marker():
     assert not row_from(trade()).inferred
 
 
+def test_overlay_per_venue_thresholds_override_the_common_minimum(qapp, tmp_path):
+    p = Prefs()
+    p.overlay.min_usd = 3000
+    p.overlay.min_by_key = {"KuCoin:spot":500, "KuCoin:perp":10000}
+    path = tmp_path / "prefs.json"
+    p.save(path)
+    ov = OverlayWindow(Prefs.load(path).overlay)
+    ov.add_trades([trade(usd=600), trade(key="KuCoin:perp",usd=6000), trade(key="MEXC:spot",usd=2000)])
+    assert [(r.venue,r.kind,r.usd) for r in ov.tape.rows] == [("KuCoin","spot",600)]
+
+
+def test_metric_overlays_follow_the_main_coin_and_paint_both_palettes(qapp):
+    from desktop.metrics import MetricOverlay
+    from desktop.overlay import set_theme
+
+    snap = {"coin":"X", "cvd":[[NOW-5, 20, -10, 1], [NOW, 30, -20, 1]],
+            "delta":{"venues":{"5m":[{"key":"Many:spot", "delta":100}]}},
+            "oi":{"venues":[{"key":"Other:perp", "coins":100, "usd":200, "pct":{"5m":1}}],
+                  "totals":{"coins":100, "usd":200, "count":1}}}
+    for theme in ("light", "dark"):
+        set_theme(theme)
+        for kind in ("delta", "oi", "cvd"):
+            ov = MetricOverlay(kind, {}, theme)
+            ov.set_coin("X"); ov.set_connected(True); ov.set_snapshot(snap)
+            assert not ov.view.grab().isNull()
+            ov.set_coin("Y")
+            ov.set_snapshot(snap)
+            assert ov.snapshot is None
+            ov.set_locked(True)
+            assert ov.windowFlags() & Qt.WindowType.WindowTransparentForInput
+            ov.set_locked(False)
+            ov.deleteLater()
+    set_theme("dark")
+
+
 def test_cancelled_updater_never_installs_a_queued_download(qapp):
     from desktop.update_dialog import UpdateDialog, UpdateJob
 

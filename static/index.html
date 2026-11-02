@@ -6,17 +6,17 @@
   <title>Manipulation Radar</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23f0b90b'/></svg>">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/workspace.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">Manipulation&nbsp;Radar <span id="demoBadge" class="demo" hidden title="Сделки сгенерированы (DEMO=1), это не реальные биржи">ДЕМО</span></div>
+  <div class="brand"><span class="radar-mark" aria-hidden="true">◎</span> Manipulation&nbsp;Radar <span id="demoBadge" class="demo" hidden title="Сделки сгенерированы (DEMO=1), это не реальные биржи">ДЕМО</span></div>
   <form id="coinForm" class="coin-form" autocomplete="off">
     <input id="coinInput" placeholder="Тикер, например PEPE" maxlength="20" spellcheck="false" aria-label="Тикер монеты">
     <button type="submit">Мониторить</button>
   </form>
-  <nav class="views" role="tablist" aria-label="Экраны">
-    <button class="view-btn" data-view="tape" title="Биржи, лента принтов, алерты, плиты">Лента</button>
-    <button class="view-btn" data-view="analysis" title="Вклад бирж в дельту, CVD и открытый интерес">Анализ рынка</button>
+  <nav class="views" aria-label="Экраны">
+    <button class="view-btn" data-view="dashboard">Модульный стол</button>
     <button class="view-btn" data-view="health" title="Связь с биржами и доступность открытого интереса">Подключения</button>
   </nav>
   <div class="meta">
@@ -25,6 +25,7 @@
     <span class="muted">потоков</span> <span id="liveCount" class="num">—</span>
   </div>
   <div class="actions">
+    <button id="themeBtn" class="ghost" aria-label="Переключить тему">Светлая тема</button>
     <button id="soundBtn" class="ghost" title="Звук алертов">🔔 Звук</button>
     <button id="venuesBtn" class="ghost">Биржи монеты</button>
     <button id="settingsBtn" class="ghost">⚙ Настройки</button>
@@ -32,7 +33,32 @@
   </div>
 </header>
 
-<main class="layout view" id="viewTape">
+<main class="workspace-layout view" id="viewTape">
+  <aside class="workspace-sidebar">
+    <div class="sidebar-heading"><h2>Рабочие пространства</h2><button id="newWorkspaceBtn" class="icon-button" aria-label="Создать рабочее пространство">+</button></div>
+    <nav id="workspaceList" class="workspace-list" aria-label="Рабочие пространства"></nav>
+    <div class="sidebar-section"><h2>Инструмент</h2><strong id="deskCoin" class="desk-coin">—</strong><span id="deskPrice" class="desk-price num">—</span><span class="muted small">USDT · основная монета</span></div>
+    <div class="sidebar-section"><div class="sidebar-heading"><h2>Подключения</h2><button id="sidebarVenuesBtn" class="icon-button" aria-label="Выбрать биржи">↗</button></div><div id="deskConnections" class="desk-connections"></div></div>
+    <div class="sidebar-bottom"><span class="connection-dot"></span><span id="workspaceSaveStatus" role="status">Компоновка сохраняется</span><span class="muted small">Manipulation Radar <span id="appVersion">1.0.0</span></span></div>
+  </aside>
+  <section class="workspace-main" aria-label="Рабочий стол">
+    <div class="workspace-toolbar">
+      <h1 id="workspaceTitle">Мой радар</h1><button id="workspaceMenuBtn" class="icon-button" aria-label="Действия с рабочим пространством" aria-expanded="false">⋯</button>
+      <span class="spacer"></span>
+      <div class="placement-switch" role="group" aria-label="Режим размещения"><button data-placement="magnet" aria-pressed="true">⌁ Магнит</button><button data-placement="free" aria-pressed="false">Свободный</button></div>
+      <button id="tileWorkspaceBtn" class="ghost small">Упорядочить</button>
+      <button id="addModuleBtn" class="add-module-button" aria-haspopup="dialog" aria-expanded="false"><b aria-hidden="true">+</b> Модуль</button>
+    </div>
+    <div id="deskSurface" class="desk-surface" aria-label="Модули рабочего пространства">
+      <div id="deskEmpty" class="desk-empty" hidden><span class="empty-desk-symbol" aria-hidden="true">⊞</span><h2>Ваш рабочий стол</h2><p>Добавьте нужные модули и расположите их как удобно.</p><button id="emptyAddModuleBtn">+ Добавить модуль</button></div>
+      <div id="snapGuideX" class="snap-guide vertical" hidden></div><div id="snapGuideY" class="snap-guide horizontal" hidden></div>
+    </div>
+    <footer class="workspace-footer"><span id="deskModuleCount">0 модулей</span><span id="placementHint">Магнит стыкует соседние края при перемещении</span><span class="spacer"></span><span id="deskClock"></span></footer>
+  </section>
+</main>
+
+<template id="moduleTemplates">
+<div class="module-template-bank">
   <section class="panel streams">
     <div class="panel-head">
       <h2>Биржи</h2>
@@ -46,16 +72,10 @@
           <tr>
             <th>Биржа</th>
             <th class="r">Цена</th>
-            <th class="r" title="Изменение цены за окно, bps">Δ окно</th>
-            <th class="r" title="Отклонение премии к консенсусу от её обычного уровня, bps. Большое значение = биржа тянет цену">Лидер</th>
             <th class="r" title="Объём в USD за окно">Объём</th>
-            <th class="r" title="Во сколько раз темп объёма выше базы">×База</th>
-            <th class="r" title="Доля агрессивных покупок">Покупки</th>
             <th title="Серия одинаковых сделок в одну сторону">Алго</th>
             <th title="Крупная заявка у цены (плита): сторона, размер, расстояние до цены. ⇡N — переставляли за ценой, ↯N — сняли без исполнения за 2 мин, ММ — плотности маркетмейкера. Клик по ячейке — свои настройки плит для этой биржи">Плита</th>
-            <th class="r" title="Доля в объёме всех бирж за окно">Доля</th>
             <th class="r">Скор</th>
-            <th title="Объём за 5 минут, 10-секундные бары: вверх покупки, вниз продажи">5 мин</th>
           </tr>
         </thead>
         <tbody id="streamsBody"></tbody>
@@ -83,7 +103,7 @@
 
     <section class="panel tape">
       <div class="panel-head tape-head">
-        <h2>Лента принтов</h2>
+        <h2>Лента</h2>
         <label class="small">от $<input id="minUsd" type="number" min="0" step="500" value="3000"></label>
         <select id="sideFilter" class="small" aria-label="Сторона">
           <option value="all">все</option>
@@ -91,24 +111,23 @@
           <option value="sell">продажи</option>
         </select>
         <button id="pauseBtn" class="ghost small">⏸ Пауза</button>
+        <button id="tapeSizeBtn" class="ghost small" title="Свой порог сделки для каждой биржи, отдельно спот и фьючерсы">Фильтры</button>
       </div>
       <div id="tapeFilters" class="chips"></div>
       <div class="tape-cols"><span>Время</span><span>Биржа</span><span class="r">Цена</span><span class="r">Кол-во</span><span class="r">USD</span><span class="r" title="Серия ордеров одинакового размера (алгоритм)">×</span></div>
       <div id="tapeList" class="tape-list"></div>
     </section>
   </section>
-</main>
-
-
-<main class="view analysis" id="viewAnalysis" hidden>
+<div class="analysis" id="viewAnalysis">
   <section class="panel a-cvd">
-    <div class="panel-head"><h2>CVD: спот и фьючерсы</h2>
+    <div class="panel-head"><h2>CVD</h2>
       <span class="legend"><i class="lg spot"></i>спот <i class="lg perp"></i>фьючерсы <i class="lg price"></i>цена</span>
-      <span class="spacer"></span><span class="muted small">с момента выбора монеты, по минутам</span></div>
+      <span class="spacer"></span><button class="ghost small pin-btn" data-overlay="cvd" title="Оверлей CVD поверх терминала" hidden>↗</button></div>
+    <div class="chart-tools"><div class="seg" id="cvdRange"><button data-seconds="900">15м</button><button data-seconds="3600">1ч</button><button data-seconds="14400">4ч</button><button data-seconds="86400">24ч</button></div><span class="spacer"></span><button id="cvdLive" class="ghost small" title="Сбросить перемещение и масштаб">К текущему времени</button></div>
     <div id="cvdChart" class="chart"></div>
   </section>
   <section class="panel a-venues">
-    <div class="panel-head"><h2>Вклад бирж в дельту</h2><div id="venueWin" class="seg"></div><span class="spacer"></span><span class="muted small">клик по заголовку — сортировка</span></div>
+    <div class="panel-head"><h2>Вклад в дельту</h2><span class="spacer"></span><div id="venueWin" class="seg"></div><button class="ghost small pin-btn" data-overlay="delta" title="Оверлей дельты поверх терминала" hidden>↗</button></div>
     <div class="table-wrap"><table class="grid-table">
       <thead id="venueHead"><tr>
         <th data-sort="key">Биржа</th><th class="r" data-sort="buy">Покупки</th><th class="r" data-sort="sell">Продажи</th>
@@ -118,36 +137,36 @@
     </table></div>
   </section>
   <section class="panel a-oi">
-    <div class="panel-head"><h2>Открытый интерес по биржам</h2><span class="spacer"></span><span class="muted small" id="oiHint"></span></div>
+    <div class="panel-head"><h2>Открытый интерес</h2><span class="spacer"></span><span class="muted small" id="oiHint"></span><button class="ghost small pin-btn" data-overlay="oi" title="Оверлей OI поверх терминала" hidden>↗</button></div>
     <div class="table-wrap"><table class="grid-table">
       <thead><tr>
         <th>Биржа</th>
         <th class="r" title="Открытый интерес в монетах (с учётом размера контракта и множителей 1000X)">ОИ, монет</th>
         <th class="r">ОИ, $</th>
-        <th class="r" title="Изменение ОИ в % от ОИ">Δ 1м</th><th class="r">Δ 5м</th><th class="r">Δ 15м</th><th class="r">Δ 1ч</th>
-        <th title="Доля биржи в изменении ОИ за 5 минут: ΔОИ биржи / сумма |ΔОИ| всех бирж">Доля Δ5м</th>
-        <th>Статус</th>
+        <th class="r" title="Изменение ОИ в % от ОИ">Δ 1м</th><th class="r">Δ 5м</th><th class="r">Δ 1ч</th>
       </tr></thead>
       <tbody id="oiBody"></tbody>
     </table></div>
   </section>
   <section class="panel a-oi-chart">
     <div class="panel-head oi-chart-head">
-      <h2>График открытого интереса</h2>
+      <h2>График OI</h2>
       <select id="oiVenue" aria-label="Биржа для графика открытого интереса"></select>
       <select id="oiUnit" aria-label="Единицы открытого интереса">
         <option value="coins">В монетах</option><option value="usd">В долларах</option>
       </select>
-      <div class="seg" id="oiRange" aria-label="Период графика">
+    </div>
+    <div class="chart-tools"><div class="seg" id="oiRange" aria-label="Период графика">
         <button type="button" data-seconds="900">15м</button><button type="button" data-seconds="3600">1ч</button>
         <button type="button" data-seconds="14400">4ч</button><button type="button" data-seconds="86400">24ч</button>
-      </div>
-    </div>
+      </div><span class="spacer"></span><button id="oiLive" class="ghost small" title="Сбросить перемещение и масштаб">К текущему времени</button></div>
     <p id="oiChartHint" class="oi-chart-hint muted small" aria-live="polite"></p>
     <div id="oiChart" class="chart"></div>
-    <p class="oi-chart-hint muted small">История текущей монеты копится во время работы приложения, до 24 часов. Нажми на биржу в таблице ОИ, чтобы открыть её график.</p>
+    <p class="chart-help muted">Тяни — перемещение · колесо — масштаб · двойной клик — сброс. История до 24 ч во время работы.</p>
   </section>
-</main>
+</div>
+</div>
+</template>
 
 <main class="view health" id="viewHealth" hidden>
   <div class="cards" id="healthCards"></div>
@@ -188,6 +207,16 @@
   </form>
 </dialog>
 
+<dialog id="tapeSizeDlg">
+  <form id="tapeSizeForm">
+    <h3 id="tapeSizeTitle">Фильтры размера сделки</h3>
+    <p class="muted small">Свой минимальный размер в USD для каждой биржи. Пустое поле — общий порог ленты. Спот и фьючерсы настраиваются независимо. Аналитика считает все сделки.</p>
+    <input id="tapeSizeSearch" type="search" placeholder="Найти биржу" aria-label="Найти биржу">
+    <div class="threshold-scroll"><table class="grid-table"><thead><tr><th>Биржа</th><th>Спот, $</th><th>Фьючерсы, $</th></tr></thead><tbody id="tapeSizeBody"></tbody></table></div>
+    <div class="dlg-actions"><button id="tapeSizeReset" type="button" class="ghost">Сбросить пороги</button><span class="spacer"></span><button id="tapeSizeCancel" type="button" class="ghost">Отмена</button><button type="submit">Сохранить</button></div>
+  </form>
+</dialog>
+
 <dialog id="venuesDlg">
   <form id="venuesForm">
     <h3>Какие биржи мониторить</h3>
@@ -222,7 +251,16 @@
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
+<div id="modulePicker" class="module-picker floating-menu" role="dialog" aria-label="Добавить модуль" hidden><div class="picker-heading"><div><h2>Добавить модуль</h2><p>Можно разместить несколько экземпляров</p></div><button class="icon-button" data-close-picker aria-label="Закрыть меню">×</button></div><div id="moduleCatalog" class="module-catalog"></div></div>
+<div id="workspaceMenu" class="floating-menu context-menu" role="menu" aria-label="Рабочее пространство" hidden><button role="menuitem" data-space-action="rename">Переименовать</button><button role="menuitem" data-space-action="duplicate">Создать копию</button><button role="menuitem" data-space-action="create">Новое пространство</button><button role="menuitem" data-space-action="delete" class="danger">Удалить пространство</button></div>
+<div id="moduleMenu" class="floating-menu context-menu" role="menu" aria-label="Модуль" hidden><button role="menuitem" data-module-action="rename">Переименовать</button><button role="menuitem" data-module-action="duplicate">Дублировать модуль</button><button role="menuitem" data-module-action="remove" class="danger">Удалить модуль</button></div>
+<dialog id="workspaceNameDlg"><form id="workspaceNameForm"><h3 id="workspaceNameTitle">Новое рабочее пространство</h3><label>Название<input id="workspaceNameInput" maxlength="80" required autocomplete="off"></label><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit">Сохранить</button></div></form></dialog>
+<dialog id="deleteWorkspaceDlg"><form id="deleteWorkspaceForm"><h3>Удалить рабочее пространство?</h3><p id="deleteWorkspaceText"></p><div class="dlg-actions"><span class="spacer"></span><button type="button" class="ghost" data-close-dialog>Отмена</button><button type="submit" class="danger">Удалить</button></div></form></dialog>
+<script src="/static/workspace-model.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/chart.js"></script>
+<script src="/static/modules.js"></script>
+<script src="/static/workspace.js"></script>
 <script src="/static/analysis.js"></script>
 </body>
 </html>

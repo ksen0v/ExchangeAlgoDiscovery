@@ -1,6 +1,6 @@
 ; Built on GitHub, never on the user's machine. All user data stays in %APPDATA%.
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "1.0.0"
 #endif
 #define RootPath AddBackslash(SourcePath) + "..\"
 
@@ -39,15 +39,26 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 [Files]
 Source: "{#RootPath}dist\ManipulationRadar\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; Old installer-only versions stored their packaged runtime here. User data is in APPDATA.
+Type: filesandordirs; Name: "{app}\_internal"; Check: LegacyRuntime
+
 [Icons]
-Name: "{userprograms}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; WorkingDir: "{app}"
-Name: "{userdesktop}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; Tasks: desktopicon; WorkingDir: "{app}"
+Name: "{userprograms}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; WorkingDir: "{app}"; AppUserModelID: "ksen0v.ManipulationRadar"
+Name: "{userdesktop}\Manipulation Radar"; Filename: "{app}\ManipulationRadar.exe"; Tasks: desktopicon; WorkingDir: "{app}"; AppUserModelID: "ksen0v.ManipulationRadar"
 
 [Run]
 Filename: "{app}\ManipulationRadar.exe"; Description: "Запустить Manipulation Radar"; Flags: nowait postinstall skipifsilent; Check: NormalLaunch
 Filename: "{app}\ManipulationRadar.exe"; Flags: nowait; Check: UpdateLaunch
 
 [Code]
+function LegacyRuntime: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\ManipulationRadar.exe')) and
+    FileExists(ExpandConstant('{app}\_internal\PySide6\Qt6WebEngineCore.dll')) and
+    (not FileExists(ExpandConstant('{app}\current.json')));
+end;
+
 function OpenProcess(dwDesiredAccess: LongWord; bInheritHandle: Boolean; dwProcessId: LongWord): THandle;
   external 'OpenProcess@kernel32.dll stdcall';
 function WaitForSingleObject(hHandle: THandle; dwMilliseconds: LongWord): LongWord;

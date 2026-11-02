@@ -20,6 +20,7 @@ class Feed(QObject):
     trades = Signal(list)
     walls = Signal(list)  # order-book wall events
     snapshot = Signal(dict)
+    analytics = Signal(dict)
     alert = Signal(dict)
     coin_changed = Signal(str)
     watch_changed = Signal(list)  # extra coins on the server
@@ -32,6 +33,7 @@ class Feed(QObject):
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.last_snapshot: dict = {}
+        self.last_analytics: dict = {}
         self._filter: dict = {"type": "filter", "min_usd": 1000.0, "keys": [], "lite": True, "coin": coin}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
@@ -126,6 +128,9 @@ class Feed(QObject):
         elif kind == "snapshot":
             self.last_snapshot = msg
             self.snapshot.emit(msg)
+        elif kind == "analytics":
+            self.last_analytics = msg
+            self.analytics.emit(msg)
         elif kind == "alert":
             self.alert.emit(msg.get("alert") or {})
         elif kind == "watch":

@@ -10,6 +10,7 @@ KEEP = 3610
 OI_TTL = 60
 OI_HISTORY_SEC = 86400
 OI_CHART_WINDOWS = (900, 3600, 14400, 86400)
+OI_TOTAL = "__total__"
 
 
 class Analytics:
@@ -28,7 +29,8 @@ class Analytics:
         self.oi_grid = defaultdict(lambda: deque(maxlen=KEEP // STEP + 2))
         self.oi_history = defaultdict(lambda: deque(maxlen=1441))
         self.cvd = {"spot": 0.0, "perp": 0.0}
-        self.cvd_points = deque(maxlen=360)
+        self.cvd_points = deque(maxlen=1441)
+        self.cvd_recent = deque(maxlen=KEEP // STEP + 2)
         self._grid_at = self._minute_at = -1
         self._price = None
 
@@ -64,12 +66,12 @@ class Analytics:
         cutoff = int(time.time() - sec) // STEP
         return sum(b - s for i, (b, s) in self.flows.get(key, {}).items() if i >= cutoff)
 
-    def oi(self, key: str, ts: float, coins: float, usd: float | None) -> None:
+    def oi(self, key: str, ts: float, coins: float, usd: float | None, members=None) -> None:
         previous = self.oi_last.get(key)
         if previous and ts <= previous[0]:
             return
         self.oi_last[key] = (ts, coins, usd)
-        point = (ts, coins, usd)
+        point = (ts, coins, usd) if members is None else (ts, coins, usd, members)
         self.oi_grid[key].append(point)
         history = self.oi_history[key]
         if history and int(history[-1][0]) // 60 == int(ts) // 60:
@@ -118,6 +120,14 @@ class Analytics:
         grid = int(now) // STEP
         if grid != self._grid_at:
             self._grid_at = grid
+            self.cvd_recent.append([now, self.cvd["spot"], self.cvd["perp"], consensus])
+            fresh = [(key, value) for key, value in self.oi_last.items()
+                     if key in streams and streams[key].status in ("live", "polling")
+                     and now - value[0] < OI_TTL]
+            if fresh:
+                usd = sum(v[2] for _, v in fresh) if all(v[2] is not None for _, v in fresh) else None
+                self.oi(OI_TOTAL, now, sum(v[1] for _, v in fresh), usd,
+                        ",".join(sorted(key for key, _ in fresh)))
             for points in self.oi_grid.values():
                 while points and points[0][0] < now - KEEP:
                     points.popleft()
@@ -155,6 +165,9 @@ class Analytics:
         for status in self.feed_status(streams, now):
             key = status["key"]
             last = self.oi_last.get(key)
+            # Listing / connection diagnostics belong to /api/health, never to the OI table.
+            if last is None or streams[key].status not in ("live", "polling"):
+                continue
             fresh = bool(last and now - last[0] < OI_TTL and streams[key].status in ("live", "polling"))
             r = {**status, "coins": last[1] if fresh else None,
                  "usd": last[2] if fresh else None, "d": {}, "pct": {}, "share": {}}
@@ -167,7 +180,10 @@ class Analytics:
                         r["pct"][label] = (last[1] / old[1] - 1) * 100
             rows.append(r)
         totals = {"coins": sum(r["coins"] or 0 for r in rows),
-                  "usd": sum(r["usd"] or 0 for r in rows), "pct": {}, "d": {}}
+                  "usd": sum(r["usd"] or 0 for r in rows)
+                  if all(r["usd"] is not None for r in rows if r["coins"] is not None) else None,
+                  "pct": {}, "d": {},
+                  "count": sum(r["coins"] is not None for r in rows)}
         for _, label in WINDOWS:
             matched = [r for r in rows if label in r["d"]]
             change = sum(r["d"][label] for r in matched)
@@ -179,7 +195,10 @@ class Analytics:
             for r in matched:
                 r["share"][label] = r["d"][label] / absolute if absolute else None
         rows.sort(key=lambda r: -(r["usd"] or 0))
+        recent = list(self.cvd_recent)
+        before = recent[0][0] if recent else now
+        cvd = [p for p in self.cvd_points if p[0] < before] + recent
         return {"type": "analytics", "coin": self.coin, "ts": now,
                 "delta": {"windows": [{"w": label} for _, label in WINDOWS], "venues": venues},
-                "cvd": list(self.cvd_points) + [[now, self.cvd["spot"], self.cvd["perp"], self._price]],
+                "cvd": cvd + [[now, self.cvd["spot"], self.cvd["perp"], self._price]],
                 "oi": {"venues": rows, "totals": totals}}

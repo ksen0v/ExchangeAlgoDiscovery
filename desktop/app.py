@@ -11,11 +11,13 @@ import logging.handlers
 import os
 import sys
 import time
+from urllib.parse import urlencode
 
-from PySide6.QtCore import QByteArray, QObject, QPoint, QRect, QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QFile, QIODevice, QObject, QPoint, QRect, QRectF, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,7 +39,9 @@ from desktop.backend import EmbeddedServer, free_port
 from desktop.feed import Feed
 from desktop.hotkeys import Hotkeys
 from desktop.overlay import OverlayWindow
+from desktop.metrics import MetricOverlay, NAMES as METRIC_NAMES
 from desktop.prefs import APP_NAME, MAX_EXTRA, ExtraOverlay, OverlayPrefs, Prefs, data_dir
+from desktop.theme import palette
 from desktop.version import VERSION
 
 log = logging.getLogger("desktop")
@@ -92,6 +96,66 @@ def dark_palette() -> QPalette:
     return pal
 
 
+class DashboardBridge(QObject):
+    themeChanged = Signal(str)
+
+    def __init__(self, ctl, parent):
+        super().__init__(parent)
+        self.ctl = ctl
+
+    @Slot(str)
+    def setTheme(self, value):
+        if value in ("dark", "light"):
+            self.ctl.set_theme(value)
+
+    @Slot(str)
+    def toggleOverlay(self, value):
+        if value in self.ctl.metric_actions:
+            action = self.ctl.metric_actions[value]
+            action.setChecked(not action.isChecked())
+
+    @Slot(result=str)
+    def currentTheme(self):
+        return self.ctl.prefs.theme
+
+
+class DashboardPage(QWebEnginePage):
+    def __init__(self, profile, parent, ctl):
+        super().__init__(profile, parent)
+        self.ctl = ctl
+        self.errors = []
+        self.channel = QWebChannel(self)
+        self.bridge = DashboardBridge(ctl, self.channel)
+        self.channel.registerObject("radarDesktop", self.bridge)
+        self.setWebChannel(self.channel)
+        # Inject Qt's bundled JS into the HTTP dashboard, avoiding local-resource / CORS loads.
+        resource = QFile(":/qtwebchannel/qwebchannel.js")
+        if not resource.open(QIODevice.OpenModeFlag.ReadOnly):
+            raise RuntimeError("Qt WebChannel JavaScript is missing")
+        source = bytes(resource.readAll()).decode("utf-8")
+        resource.close()
+        script = QWebEngineScript()
+        script.setName("radar-desktop")
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        script.setRunsOnSubFrames(False)
+        script.setSourceCode(source + """
+new QWebChannel(qt.webChannelTransport, function(c) {
+  window.radarDesktop=c.objects.radarDesktop;
+  const apply = function(theme) { if (window.applyTheme) window.applyTheme(theme); };
+  window.radarDesktop.themeChanged.connect(apply);
+  window.radarDesktop.currentTheme(apply);
+  document.dispatchEvent(new Event('radar-desktop-ready'));
+});""")
+        self.scripts().insert(script)
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if level == QWebEnginePage.JavaScriptConsoleMessageLevel.ErrorMessageLevel:
+            self.errors.append(f"{source}:{line}: {message}")
+            self.errors = self.errors[-20:]
+            log.error("dashboard JavaScript: %s", self.errors[-1])
+
+
 class MainWindow(QMainWindow):
     def __init__(self, ctl: "Controller"):
         super().__init__()
@@ -111,16 +175,29 @@ class MainWindow(QMainWindow):
         tb.addWidget(coins)
         tb.addSeparator()
         tb.addAction(ctl.act_lock)
+        metrics = QToolButton()
+        metrics.setText("Аналитические оверлеи")
+        metrics.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        metrics_menu = QMenu(metrics)
+        for action in ctl.metric_actions.values():
+            metrics_menu.addAction(action)
+        metrics.setMenu(metrics_menu)
+        tb.addWidget(metrics)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
         self.status = QLabel("запуск…")
         self.status.setStyleSheet("color:#7d8793; padding:0 10px;")
         tb.addWidget(self.status)
-        tb.addAction(ctl.act_browser)
-        tb.addAction(ctl.act_connection)
         tb.addAction(ctl.act_update)
-        tb.addAction(ctl.act_data)
+        more = QToolButton()
+        more.setText("Меню")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more_menu = QMenu(more)
+        for action in (ctl.act_theme, ctl.act_browser, ctl.act_connection, ctl.act_data):
+            more_menu.addAction(action)
+        more.setMenu(more_menu)
+        tb.addWidget(more)
 
         self.stack = QStackedWidget()
         self.message = QLabel("Запуск сервера…")
@@ -139,7 +216,7 @@ class MainWindow(QMainWindow):
         profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
         profile.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
         self.web = QWebEngineView()
-        self.web.setPage(QWebEnginePage(profile, self.web))
+        self.web.setPage(DashboardPage(profile, self.web, ctl))
         self.web.loadFinished.connect(self._loaded)
         self.web_ok = False
         self._url, self._retries = "", 0
@@ -158,6 +235,7 @@ class MainWindow(QMainWindow):
     def _loaded(self, ok: bool) -> None:
         self.web_ok = ok
         if ok:
+            self.web.page().runJavaScript(f"window.applyTheme && window.applyTheme({json.dumps(self.ctl.prefs.theme)})")
             return
         if self._retries < LOAD_RETRIES:  # the server may still be busy starting ~125 streams
             self._retries += 1
@@ -226,10 +304,13 @@ class OverlaySlot(QObject):
             self.extra.visible = visible
         else:
             self.ctl.prefs.overlay_visible = visible
+        self.apply_filter()
 
     def apply_filter(self) -> None:
         p = self.prefs
-        self.feed.set_filter(p.min_usd, p.keys, p.show_walls and self.is_main)
+        analytics = self.is_main and any(ov.isVisible() for ov in getattr(self.ctl, "metrics", {}).values())
+        self.feed.set_filter(p.min_usd, p.keys, p.show_walls and self.is_main and self.action.isChecked(),
+                             min_by_key=p.min_by_key, tape=self.action.isChecked(), analytics=analytics)
 
     def set_prefs(self, p: OverlayPrefs) -> None:
         self.prefs = p
@@ -262,6 +343,10 @@ class Controller(QObject):
         super().__init__()
         self.app = app
         self.prefs = prefs
+        self.prefs.theme = prefs.theme if prefs.theme in ("dark", "light") else "dark"
+        from desktop.overlay import set_theme
+        set_theme(self.prefs.theme)
+        app.setPalette(palette(self.prefs.theme))
         self.args = args
         self.single = single
         self.prefs_path = data_dir() / "desktop.json"
@@ -269,7 +354,7 @@ class Controller(QObject):
         self._quitting = False
         self._lock_hint_shown = False
         self._started = False
-        self._hidden_by_hotkey: list[OverlaySlot] = []
+        self._hidden_by_hotkey: list[QAction] = []
         self.update_dialog = None
 
         self.server: EmbeddedServer | None = None
@@ -294,11 +379,23 @@ class Controller(QObject):
         self.slots += [OverlaySlot(self, e.coin, e.overlay, e) for e in prefs.extra]
         self.main = MainWindow(self)
         self.main.setWindowIcon(self.icon)
+        self.metrics = {}
+        for kind, action in self.metric_actions.items():
+            saved = prefs.metric_overlays.get(kind, {})
+            saved = saved if isinstance(saved, dict) else {}
+            overlay = MetricOverlay(kind, saved, prefs.theme)
+            overlay.setWindowIcon(self.icon)
+            overlay.hide_requested.connect(lambda a=action: a.setChecked(False))
+            overlay.lock_requested.connect(lambda: self.act_lock.setChecked(True))
+            overlay.coin_requested.connect(lambda: self.ask_coin(self.main_slot))
+            overlay.changed.connect(self.save_prefs)
+            self.metrics[kind] = overlay
         self.tray = self._make_tray()
         self.hotkeys = Hotkeys()
 
         feed = self.main_slot.feed
         feed.snapshot.connect(self._on_snapshot)
+        feed.analytics.connect(self._on_analytics)
         feed.alert.connect(self._on_alert)
         feed.coin_changed.connect(self._on_main_coin)
         feed.connection.connect(self._on_connection)
@@ -315,6 +412,10 @@ class Controller(QObject):
         for s in self.extra_slots:
             s.action.setChecked(s.extra.visible)
         self.act_lock.setChecked(prefs.overlay_locked)
+        for kind, action in self.metric_actions.items():
+            saved = prefs.metric_overlays.get(kind, {})
+            if isinstance(saved, dict):
+                action.setChecked(bool(saved.get("visible")))
         self._rebuild_coin_controls()
         self.hotkeys.start({"overlay": prefs.hotkey_overlay, "lock": prefs.hotkey_lock})
 
@@ -336,6 +437,13 @@ class Controller(QObject):
 
     # ---- setup -----------------------------------------------------------
     def _make_actions(self) -> None:
+        self.metric_actions = {}
+        for kind, name in METRIC_NAMES.items():
+            action = QAction(name, self, checkable=True)
+            action.toggled.connect(lambda visible, key=kind: self._metric_visibility(key, visible))
+            self.metric_actions[kind] = action
+        self.act_theme = QAction("Сменить тему: чёрная / белая", self)
+        self.act_theme.triggered.connect(lambda: self.set_theme("light" if self.prefs.theme == "dark" else "dark"))
         self.act_lock = QAction("🔒 Сквозные клики", self, checkable=True)
         self.act_lock.setToolTip(f"Клики проходят сквозь оверлеи в терминал ({self.prefs.hotkey_lock})")
         self.act_lock.toggled.connect(self._set_locked)
@@ -425,6 +533,9 @@ class Controller(QObject):
             menu.addAction(slot.action)
         menu.addAction(self.act_add_coin)
         menu.addAction(self.act_lock)
+        for action in self.metric_actions.values():
+            menu.addAction(action)
+        menu.addAction(self.act_theme)
         menu.addAction(self.act_update)
         menu.addSeparator()
         menu.addAction("Выход", self.quit)
@@ -442,6 +553,13 @@ class Controller(QObject):
         saved = [self.prefs.overlay_geometry] + [e.geometry for e in self.prefs.extra]
         for i, (slot, geo) in enumerate(zip(self.slots, saved, strict=False)):
             self._place_overlay(slot, i, geo)
+        for index, (kind, overlay) in enumerate(self.metrics.items()):
+            saved = self.prefs.metric_overlays.get(kind, {})
+            geometry = saved.get("geometry", "") if isinstance(saved, dict) else ""
+            if not overlay.restore(geometry) or not on_screen(overlay.geometry()):
+                overlay.resize(min(420, avail.width()), min(340, avail.height()))
+                overlay.move(avail.left() + min(30 + index * 70, max(0, avail.width() - overlay.width())),
+                             avail.top() + min(100 + index * 60, max(0, avail.height() - overlay.height())))
 
     def _place_overlay(self, slot: OverlaySlot, index: int, geometry: str = "") -> None:
         ov = slot.overlay
@@ -471,8 +589,11 @@ class Controller(QObject):
         x = min(max(frame.left(), avail.left()), avail.right() - frame.width())
         self.main.move(x, avail.top())
 
-    def web_url(self) -> str:
-        return self.base_url + (f"/?token={self.token}" if self.token else "/")
+    def web_url(self, desktop: bool = False) -> str:
+        query = {"token": self.token} if self.token else {}
+        if desktop:
+            query.update(desktop="1", theme=self.prefs.theme)
+        return self.base_url + "/" + ("?" + urlencode(query) if query else "")
 
     # ---- backend ---------------------------------------------------------
     def _wait_backend(self) -> None:
@@ -491,7 +612,24 @@ class Controller(QObject):
         self._started = True
         for slot in self.slots:
             slot.feed.start()
-        self.main.load(self.web_url())
+        self.main.load(self.web_url(desktop=True))
+        self._report_update_start()
+
+    def _report_update_start(self) -> None:
+        """Acknowledge a successful native/backend startup to the file updater."""
+        from pathlib import Path
+        from desktop.distribution import atomic_json
+        raw = os.environ.get("RADAR_UPDATE_READY")
+        if not raw:
+            return
+        ready = Path(raw).resolve()
+        cache = (data_dir() / "updates").resolve()
+        if ready.name != "ready.json" or not ready.is_relative_to(cache):
+            return
+        try:
+            atomic_json(ready, {"version":VERSION, "pid":os.getpid()})
+        except OSError:
+            log.exception("cannot acknowledge update startup")
 
     def _sync_watch(self) -> None:
         """The desktop owns the list of extra coins: tell the server (also after reconnects)."""
@@ -512,6 +650,8 @@ class Controller(QObject):
         if not coin or coin == main.overlay.coin:
             return
         main.overlay.set_coin(coin)
+        for overlay in self.metrics.values():
+            overlay.set_coin(coin)
         # the server drops a watched coin that became the main one: drop its overlay too
         for slot in [s for s in self.extra_slots if s.coin == coin]:
             self._drop_slot(slot)
@@ -523,6 +663,8 @@ class Controller(QObject):
             self._sync_watch()  # the server lost some (restart, another client): put them back
 
     def _on_connection(self, ok: bool, error: str) -> None:
+        for overlay in self.metrics.values():
+            overlay.set_connected(ok)
         if ok:
             self._sync_watch()
         else:
@@ -620,9 +762,40 @@ class Controller(QObject):
             self.save_prefs()
 
     # ---- actions ---------------------------------------------------------
+    def _on_analytics(self, msg: dict) -> None:
+        for overlay in self.metrics.values():
+            if overlay.isVisible():
+                overlay.set_snapshot(msg)
+
+    def _metric_visibility(self, kind: str, visible: bool) -> None:
+        if not hasattr(self, "metrics"):
+            return
+        overlay = self.metrics[kind]
+        overlay.setVisible(visible)
+        overlay.set_coin(self.main_slot.shown_coin)
+        overlay.set_connected(self.main_slot.overlay.connected)
+        if visible:
+            overlay.set_snapshot(self.main_slot.feed.last_analytics)
+        self.main_slot.apply_filter()
+
+    def set_theme(self, theme: str, persist: bool = True) -> None:
+        from desktop.overlay import set_theme
+        self.prefs.theme = theme if theme in ("dark", "light") else "dark"
+        self.app.setPalette(palette(self.prefs.theme))
+        set_theme(self.prefs.theme)
+        for slot in self.slots:
+            slot.overlay.apply_theme()
+        for overlay in self.metrics.values():
+            overlay.apply_theme(self.prefs.theme)
+        self.main.web.page().bridge.themeChanged.emit(self.prefs.theme)
+        if persist:
+            self.save_prefs()
+
     def _set_locked(self, locked: bool) -> None:
         for slot in self.slots:
             slot.overlay.set_locked(locked)
+        for overlay in self.metrics.values():
+            overlay.set_locked(locked)
         self.prefs.overlay_locked = locked
         visible = any(s.overlay.isVisible() for s in self.slots)
         if locked and not self._lock_hint_shown and self.tray and visible:
@@ -636,14 +809,15 @@ class Controller(QObject):
 
     def _toggle_overlays(self) -> None:
         """Hotkey: hide every overlay, or bring back the ones it hid (the main one if none)."""
-        shown = [s for s in self.slots if s.action.isChecked()]
+        actions = [s.action for s in self.slots] + list(self.metric_actions.values())
+        shown = [a for a in actions if a.isChecked()]
         if shown:
             self._hidden_by_hotkey = shown
-            for s in shown:
-                s.action.setChecked(False)
+            for action in shown:
+                action.setChecked(False)
         else:
-            for s in [s for s in self._hidden_by_hotkey if s in self.slots] or [self.main_slot]:
-                s.action.setChecked(True)
+            for action in [a for a in self._hidden_by_hotkey if a in actions] or [self.main_slot.action]:
+                action.setChecked(True)
 
     def _on_hotkey(self, name: str) -> None:
         if name == "overlay":
@@ -723,30 +897,50 @@ class Controller(QObject):
             self.update_dialog = None
             dialog.deleteLater()
 
-    def _install_update(self, path: str, dialog) -> None:
+    def _install_update(self, prepared, dialog) -> None:
         from pathlib import Path
         from PySide6.QtCore import QProcess
+        from desktop.distribution import installed_root
+        from desktop.file_updates import PreparedUpdate
         from desktop.updates import installer_args
 
         if not getattr(sys, "frozen", False) or sys.platform != "win32":
             dialog._failed("Установка обновлений доступна в Windows-сборке .exe")
             return
-        installer = Path(path).resolve()
-        if installer.parent != (data_dir() / "updates").resolve() or not installer.is_file():
+        if not isinstance(prepared, PreparedUpdate):
+            dialog._failed("Некорректное подготовленное обновление")
+            return
+        path = Path(prepared.path).resolve()
+        cache = (data_dir() / "updates").resolve()
+        if not path.is_relative_to(cache) or not path.is_file():
             dialog._failed("Проверенный установщик не найден. Повторите загрузку")
             return
+        if prepared.mode == "files":
+            root = installed_root(Path(sys.executable))
+            helper = Path(prepared.launcher).resolve() if prepared.launcher else None
+            if root is None or helper is None or helper != path.parent / "apply.exe" or not helper.is_file():
+                dialog._failed("Программа применения обновления не найдена")
+                return
+            program = helper
+            arguments = ["--apply-plan", str(path), "--root", str(root), "--pid", str(os.getpid())]
+        elif prepared.mode == "installer" and path.parent == cache:
+            program, arguments = path, installer_args(os.getpid())
+        else:
+            dialog._failed("Неизвестный тип обновления")
+            return
         self.save_prefs()
-        started, _pid = QProcess.startDetached(str(installer), installer_args(os.getpid()))
+        started, _pid = QProcess.startDetached(str(program), arguments)
         if not started:
             dialog._failed("Не удалось запустить установщик. Приложение продолжает работать")
             return
         dialog.accept()
-        self.quit()  # the installer waits for this process to finish before replacing files
+        self.quit()  # the updater waits for this process, then atomically switches complete versions
 
     # ---- shutdown --------------------------------------------------------
     def save_prefs(self) -> None:
         self.prefs.main_geometry = self.main.saveGeometry().toHex().data().decode()
         self.prefs.overlay_geometry = self.main_slot.geometry_hex()
+        self.prefs.metric_overlays = {kind: overlay.save() for kind, overlay in self.metrics.items()}
         for slot in self.extra_slots:
             slot.extra.geometry = slot.geometry_hex()
         try:
@@ -762,6 +956,8 @@ class Controller(QObject):
         self.hotkeys.stop()
         for slot in self.slots:
             slot.overlay.hide()
+        for overlay in self.metrics.values():
+            overlay.hide()
         if self.tray:
             self.tray.hide()
         self.app.quit()
@@ -774,28 +970,127 @@ class Controller(QObject):
 
     # ---- self test (CI smoke test of the built .exe) ---------------------
     def selftest(self) -> None:
+        # CI's virtual display is small; render a full desktop workspace for the artifact.
+        self.main.resize(1560, 940)
+        QTimer.singleShot(200, self._selftest_viewport)
+
+    def _selftest_viewport(self) -> None:
+        # Windows runners cap top-level windows at their 1024px virtual monitor.
+        # Test the wide CSS viewport through browser zoom, without changing the user's layout.
+        self.main.web.setZoomFactor(min(1.0, self.main.web.width() / 1560))
+        QTimer.singleShot(300, self._selftest_inspect)
+
+    def _selftest_inspect(self) -> None:
+        script = """JSON.stringify((() => {
+          const oiModule = Desk.ofType('oiChart')[0], oiChart = oiModule.chart;
+          const before = oiChart.span;
+          oiChart.zoom(.8, .5);
+          const end = oiChart.end;
+          oiChart.update(oiChart.points);
+          const interactive = !oiChart.follow && oiChart.span < before && Math.abs(oiChart.end - end) < .001;
+          oiChart.live(oiModule.p.seconds);
+          const saved = WorkspaceModel.clone(Desk.model), cached = localStorage.getItem('workspaces.v1');
+          const changed = Desk.changed, subscriptions = Desk.subscriptionsChanged;
+          let modular = false, independent = false, disposed = false;
+          // Exercise real DOM controllers without writing temporary CI layouts to user preferences.
+          Desk.changed = () => {}; Desk.subscriptionsChanged = () => {};
+          try {
+            Desk.nameDialog('create');
+            document.getElementById('workspaceNameInput').value = 'CI workspace';
+            document.getElementById('workspaceNameForm').requestSubmit();
+            const spaceId = Desk.active.id;
+            const first = Desk.add('oiChart'), second = Desk.add('oiChart');
+            first.p.unit = 'usd'; first.render();
+            independent = second.p.unit === 'coins' && first.chart !== second.chart;
+            Desk.remove(first.id);
+            disposed = !first.root.isConnected && !first.chart.active && first.chart.points.length === 0;
+            Desk.nameDialog('rename', spaceId);
+            document.getElementById('workspaceNameInput').value = 'OI workspace';
+            document.getElementById('workspaceNameForm').requestSubmit();
+            const restored = WorkspaceModel.normalize(JSON.parse(JSON.stringify(Desk.model)));
+            modular = Desk.active.name === 'OI workspace' && restored.spaces.length === saved.spaces.length + 1 && restored.spaces.at(-1).modules.length === 1;
+            Desk.deleteSpace(spaceId);
+          } finally {
+            Desk.model = saved; Desk.mount(); Desk.changed = changed; Desk.subscriptionsChanged = subscriptions;
+            Desk.subscriptionsChanged();
+          }
+          const original = document.documentElement.dataset.theme;
+          applyTheme('light');
+          const light = getComputedStyle(document.body).backgroundColor;
+          applyTheme('dark');
+          const dark = getComputedStyle(document.body).backgroundColor;
+          applyTheme(original);
+          return {ready: !!A.snap && Desk.ofType('oiChart')[0].root.querySelectorAll('canvas').length === 2,
+                  bridge: !!window.radarDesktop, interactive,
+                  themes: light !== dark,
+                  modular, independent, disposed, preferences: cached === localStorage.getItem('workspaces.v1'),
+                  panels: document.querySelectorAll('.desk-surface .desk-module').length,
+                  fits: Array.from(document.querySelectorAll('.desk-surface .desk-module')).every(el => {
+                    const r=el.getBoundingClientRect(); return r.bottom <= innerHeight+1 && r.right <= innerWidth+1 && r.top >= 0 && r.left >= 0;
+                  }),
+                  theme: document.documentElement.dataset.theme};
+        })())"""
+        self.main.web.page().runJavaScript(script, lambda raw: QTimer.singleShot(250, lambda: self._selftest_dashboard(raw)))
+
+    def _selftest_dashboard(self, raw) -> None:
+        try:
+            dashboard = json.loads(raw) if isinstance(raw, str) else {}
+        except (TypeError, ValueError):
+            dashboard = {}
         out = data_dir()
         main = self.main_slot
         main.overlay.grab().save(str(out / "selftest-overlay.png"))
         for slot in self.extra_slots:
             slot.overlay.grab().save(str(out / f"selftest-overlay-{slot.coin}.png"))
         self.main.grab().save(str(out / "selftest-main.png"))
+        for kind, overlay in self.metrics.items():
+            overlay.grab().save(str(out / f"selftest-{kind}.png"))
         result = {
             "backend": bool(self.server and self.server.started) or not self.server,
             "feed_trades": main.got_trades,
             "overlay_rows": len(main.overlay.tape.rows),
             "dashboard_loaded": self.main.web_ok,
+            "dashboard_errors": self.main.web.page().errors,
+            "dashboard": dashboard,
+            "metric_data": {kind: bool(overlay.snapshot) for kind, overlay in self.metrics.items()},
             "coin": main.overlay.coin,
             "version": VERSION,
             "extra": {s.coin: {"trades": s.got_trades, "rows": len(s.overlay.tape.rows)} for s in self.extra_slots},
         }
-        ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"]
+        ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"] and not result["dashboard_errors"]
         ok = ok and all(v["trades"] > 0 for v in result["extra"].values())
+        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits", "modular", "independent", "disposed", "preferences")) and dashboard.get("panels") == 6
+        ok = ok and all(result["metric_data"].values())
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")
         log.info("selftest %s", result)
+        self._selftest_result = result
+        self._selftest_ok = ok
+        # Leave the JavaScript result callback before sending the native theme change.
+        QTimer.singleShot(0, self._selftest_switch_theme)
+
+    def _selftest_switch_theme(self) -> None:
+        self.set_theme("light", persist=False)
+        QTimer.singleShot(1000, lambda: self.main.web.page().runJavaScript(
+            "document.documentElement.dataset.theme", self._selftest_theme_ready))
+
+    def _selftest_theme_ready(self, theme) -> None:
+        self._selftest_result["native_theme_sync"] = theme == "light"
+        self._selftest_ok = self._selftest_ok and theme == "light"
+        self._selftest_result["ok"] = self._selftest_ok
+        (data_dir() / "selftest.json").write_text(json.dumps(self._selftest_result, indent=2), "utf-8")
+        log.info("selftest native theme sync: %s", theme)
+        # Give the compositor a frame after its DOM acknowledgement before grabbing the page.
+        QTimer.singleShot(700, self._selftest_light)
+
+    def _selftest_light(self) -> None:
+        out = data_dir()
+        self.main.grab().save(str(out / "selftest-main-light.png"))
+        self.main_slot.overlay.grab().save(str(out / "selftest-overlay-light.png"))
+        for kind, overlay in self.metrics.items():
+            overlay.grab().save(str(out / f"selftest-{kind}-light.png"))
         self._quitting = True
-        self.app.exit(0 if ok else 1)
+        self.app.exit(0 if self._selftest_ok else 1)
 
 
 def on_screen(rect: QRect) -> bool:
@@ -844,6 +1139,14 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging()
     log.info("starting, data dir %s", data_dir())
+    if sys.platform == "win32":
+        # Version folders change at each update; the taskbar identity and installed
+        # shortcut must keep pointing to the stable launcher, not an old core EXE.
+        import ctypes
+        identity = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        identity.argtypes = [ctypes.c_wchar_p]
+        identity.restype = ctypes.c_long
+        identity("ksen0v.ManipulationRadar")
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
@@ -861,6 +1164,8 @@ def main(argv: list[str] | None = None) -> int:
         prefs.overlay_visible = True
     ctl = Controller(app, prefs, args, single or None)
     if args.selftest:
+        for action in ctl.metric_actions.values():
+            action.setChecked(True)
         QTimer.singleShot(int(args.selftest * 1000), ctl.selftest)
     started = time.monotonic()
     rc = app.exec()

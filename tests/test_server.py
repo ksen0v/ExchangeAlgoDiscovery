@@ -23,6 +23,45 @@ def test_bad_config_is_rejected_and_not_saved(client):
     assert r.status_code == 200 and r.json()["window_sec"] == 20
 
 
+def test_workspaces_round_trip_to_database_and_preserve_independent_module_settings(client):
+    import asyncio
+    from app.storage import Storage
+
+    assert client.get("/api/workspaces").json() is None
+    layout = {"schema":1,"updatedAt":1234,"activeId":"oi-desk","spaces":[
+        {"id":"oi-desk","name":"OI desktop","mode":"magnet","modules":[
+            {"id":"chart-a","type":"oiChart","rect":{"x":0,"y":0,"w":0.5,"h":1},"settings":{"oiKey":"Binance:perp","unit":"usd"}},
+            {"id":"chart-b","type":"oiChart","rect":{"x":0.5,"y":0,"w":0.5,"h":1},"settings":{"oiKey":"Bybit:perp","unit":"coins"}}]},
+        {"id":"empty-desk","name":"Empty","mode":"free","modules":[]}]}
+    assert client.put("/api/workspaces", json=layout).status_code == 200
+    saved = client.get("/api/workspaces").json()
+    assert saved["spaces"][0]["modules"][0]["settings"]["oiKey"] == "Binance:perp"
+    assert saved["spaces"][0]["modules"][1]["settings"]["unit"] == "coins"
+    assert saved["spaces"][1]["modules"] == []
+
+    async def read_from_disk():
+        db = Storage(settings.db_path)
+        await db.open()
+        try:
+            return await db.get("workspaces.v1")
+        finally:
+            await db.close()
+    assert asyncio.run(read_from_disk()) == saved
+    bad = {**layout,"activeId":"missing"}
+    assert client.put("/api/workspaces", json=bad).status_code == 422
+    assert client.get("/api/workspaces").json() == saved
+    assert client.put("/api/workspaces", json={"schema":1,"updatedAt":1235,"activeId":None,"spaces":[]}).status_code == 200
+
+
+def test_workspaces_reject_overlapping_ids_and_outside_rectangles(client):
+    module = {"id":"same","type":"tape","rect":{"x":0,"y":0,"w":0.5,"h":0.5},"settings":{}}
+    layout = {"schema":1,"updatedAt":0,"activeId":"s","spaces":[{"id":"s","name":"Workspace","mode":"free","modules":[module,module]}]}
+    assert client.put("/api/workspaces", json=layout).status_code == 422
+    layout["spaces"][0]["modules"] = [{**module,"rect":{"x":0.8,"y":0,"w":0.5,"h":0.5}}]
+    assert client.put("/api/workspaces", json=layout).status_code == 422
+    assert client.get("/api/workspaces").json() is None
+
+
 def test_ws_filter_by_venue_and_size(client):
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "filter", "min_usd": 0, "keys": ["Binance:spot"], "lite": True})
@@ -62,6 +101,25 @@ def test_client_filter_message_parsing():
     c.set_filter({"min_usd": 1000, "keys": []})
     assert c.min_usd == 1000 and c.keys is None
     assert c.wants({"usd": 1500, "key": "Z:perp"}) and not c.wants({"usd": 500, "key": "Z:perp"})
+
+
+def test_per_market_trade_thresholds_are_used_before_allocating_or_sending_rows():
+    from app.hub import Hub
+
+    h = Hub()
+    h.primary = "X"
+    c = h.add(None)
+    c.set_filter({"min_usd": 3000, "min_by_key":{"A:spot":500, "A:perp":10000}})
+    assert h.trade_floor("X", "A:spot") == 500
+    assert h.trade_floor("X", "A:perp") == 10000
+    assert c.wants({"key":"A:spot", "usd":600}, "X")
+    assert not c.wants({"key":"A:perp", "usd":6000}, "X")
+    assert h.trade_floor("X", "B:spot") == 3000
+    c.set_filter({"tape":False})
+    assert h.trade_floor("X", "A:spot") == float("inf")
+    assert not c.wants({"key":"A:spot", "usd":1e9}, "X")
+    c.set_filter({"min_by_key":{"A:spot":"NaN", "A:perp":-5, "B:spot":0}, "tape":True})
+    assert c.min_by_key == {"B:spot":0}
 
 
 def test_switching_coin_works(client):

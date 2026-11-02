@@ -23,25 +23,44 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-desktop.txt
             requirements-dev.txt
+            .github/windows-build-constraints.txt
 
       - name: Install
-        run: pip install -r requirements-desktop.txt -r requirements-dev.txt pyinstaller
+        run: pip install -c .github/windows-build-constraints.txt -r requirements-desktop.txt -r requirements-dev.txt pyinstaller==6.22.3
 
       - name: Set build version
         id: version
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python -m scripts.prepare_version
 
       - name: Tests
-        run: python -m pytest -q
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/workspace.test.cjs
 
       - name: Build
-        run: pyinstaller --noconfirm desktop/radar.spec
+        env:
+          PYTHONHASHSEED: "1"
+          SOURCE_DATE_EPOCH: "1577836800"
+        run: |
+          pyinstaller --noconfirm desktop/radar.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pyinstaller --noconfirm desktop/launcher.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble versioned app and changed-file packages
+        id: files
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m scripts.file_release
 
       - name: Smoke test (demo exchanges, 40 s)
         timeout-minutes: 5
@@ -97,6 +116,10 @@ jobs:
           $result = Get-Content -LiteralPath (Join-Path $env:RADAR_HOME 'selftest.json') -Raw | ConvertFrom-Json
           if (-not $result.ok -or $result.version -ne '${{ steps.version.outputs.version }}') { throw 'Installed build version or startup check failed' }
 
+      - name: Verify changed-file update of a running installed app
+        timeout-minutes: 5
+        run: python -m scripts.verify_file_updates
+
       - uses: actions/upload-artifact@v4
         with:
           name: ManipulationRadar-windows
@@ -109,6 +132,9 @@ jobs:
           path: |
             dist/ManipulationRadar-Setup.exe
             dist/update.json
+            dist/files.json
+            dist/size-report.json
+            dist/update-parts/
           retention-days: 30
 
       - uses: actions/upload-artifact@v4
@@ -118,6 +144,7 @@ jobs:
           path: |
             selftest/
             installer-selftest/
+            file-update-selftest/
           if-no-files-found: ignore
 
       - name: Release
@@ -130,9 +157,23 @@ jobs:
           make_latest: true
           fail_on_unmatched_files: true
           body: |
+            Модульный стол: добавляйте нужные модули кнопкой «+», перемещайте и меняйте размер.
+            Два режима размещения: магнит и свободный. Рабочие пространства можно создавать,
+            переименовывать, копировать и удалять; компоновка и настройки модулей сохраняются.
+
             Установщик Windows. При первой установке запустите ManipulationRadar-Setup.exe.
             Следующие версии доступны через «Обновления…» в приложении.
+            После перехода на новую систему приложение загружает только изменившиеся файлы.
             Настройки и база данных сохраняются в папке пользователя.
           files: |
             dist/ManipulationRadar-Setup.exe
             dist/update.json
+            dist/files.json
+            dist/size-report.json
+            ${{ steps.files.outputs.parts }}
+
+      - name: Start public release history at 1.0.0
+        if: success() && steps.version.outputs.version == '1.0.0' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/minimal-radar' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m scripts.retire_legacy_releases
