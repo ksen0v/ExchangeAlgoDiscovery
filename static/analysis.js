@@ -41,7 +41,8 @@ function refreshOiHistory(){
   if(!wanted.size){clearInterval(A.oiTimer);A.oiTimer=null;return;}
   for(const key of wanted){
     let entry=A.oiCache.get(key);
-    if(entry?.loading||entry&&Date.now()-entry.fetched<10000)continue;
+    const interval=entry?.data&&!entry.error&&!entry.data.points.length?2000:10000;
+    if(entry?.loading||entry&&Date.now()-entry.fetched<interval)continue;
     if(!entry){entry={data:null,fetched:0,error:'',loading:false};A.oiCache.set(key,entry);}
     entry.abort=new AbortController();entry.loading=true;entry.error='';const controller=entry.abort,coin=S.coin;
     api(`/api/oi/history?coin=${encodeURIComponent(coin)}&key=${encodeURIComponent(key)}&seconds=86400`,{signal:controller.signal}).then(data=>{

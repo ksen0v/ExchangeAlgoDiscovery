@@ -68,11 +68,11 @@ def main():
     original = updates._request
     updates._request = download
     try:
-        prepared = prepare_files(plan, cache, threading.Event(), argv=["--demo","--selftest","20"])
+        prepared = prepare_files(plan, cache, threading.Event(), argv=["--demo","--selftest","30"])
     finally:
         updates._request = original
     env = dict(os.environ, RADAR_HOME=str(data))
-    old = subprocess.Popen([str(core / d.CORE_NAME),"--demo","--selftest","20"], env=env)
+    old = subprocess.Popen([str(core / d.CORE_NAME),"--demo","--selftest","30"], env=env)
     try:
         result = subprocess.run([str(prepared.launcher),"--apply-plan",str(prepared.path),"--root",str(installed),
                                  "--pid",str(old.pid),"--quiet"], env=env, timeout=150)
