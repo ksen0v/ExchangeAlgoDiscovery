@@ -7,44 +7,19 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
-REPOSITORY = "ksen0v/ExchangeAlgoDiscovery"
+from desktop.distribution import (FILES_NAME, MAX_JSON_SIZE, REPOSITORY, SETUP_NAME, MANIFEST_NAME,
+                                  UpdateError, asset_url, validate_manifest, valid_hash, version_key)
+
 RELEASES_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
-SETUP_NAME = "ManipulationRadar-Setup.exe"
-MANIFEST_NAME = "update.json"
 MAX_INSTALLER_SIZE = 1024 * 1024 * 1024
-
-
-class UpdateError(Exception):
-    pass
 
 
 class Cancelled(UpdateError):
     pass
-
-
-def version_key(value: str) -> tuple[int, ...]:
-    if not isinstance(value, str):
-        raise UpdateError("Неверный номер версии в выпуске")
-    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?", value)
-    if not match:
-        raise UpdateError("Неверный номер версии в выпуске")
-    parts = tuple(int(x or 0) for x in match.groups())
-    if any(p > 65535 for p in parts):
-        raise UpdateError("Номер версии вне допустимого диапазона Windows")
-    return parts
-
-
-def asset_url(value: str, tag: str, name: str) -> str:
-    url = urlsplit(value)
-    expected = f"/{REPOSITORY}/releases/download/{tag}/{name}"
-    if (url.scheme != "https" or url.netloc != "github.com" or url.query or url.fragment
-            or unquote(url.path) != expected):
-        raise UpdateError("Файл обновления должен находиться в выпуске этого проекта на GitHub")
-    return value
 
 
 @dataclass(frozen=True)
@@ -54,6 +29,11 @@ class Release:
     url: str
     sha256: str
     size: int
+    file_plan: object = None
+
+    @property
+    def download_size(self):
+        return self.file_plan.download_size if self.file_plan is not None else self.size
 
 
 def parse_release(release: dict, manifest: dict) -> Release:
@@ -101,7 +81,7 @@ def read_json(url: str) -> dict:
     return data
 
 
-def check_release(current: str) -> Release | None:
+def check_release(current: str, root: Path | None = None, cancel=None) -> Release | None:
     try:
         release = read_json(RELEASES_URL)
     except urllib.error.HTTPError as exc:
@@ -116,7 +96,51 @@ def check_release(current: str) -> Release | None:
     if not manifest:
         raise UpdateError("Выпуск ещё не готов: нет описания обновления")
     url = asset_url(manifest.get("browser_download_url", ""), release["tag_name"], MANIFEST_NAME)
-    return parse_release(release, read_json(url))
+    metadata = read_json(url)
+    result = parse_release(release, metadata)
+    description = metadata.get("file_manifest")
+    if root is None or not isinstance(description, dict):
+        return result
+    try:
+        from desktop.file_updates import plan_files
+        asset = next(a for a in release.get("assets", []) if a.get("name") == FILES_NAME)
+        size = description.get("size")
+        if (description.get("asset") != FILES_NAME or type(size) is not int or not 0 < size <= MAX_JSON_SIZE
+                or asset.get("size") != size or not valid_hash(description.get("sha256"))):
+            return result
+        digest = asset.get("digest")
+        if digest and digest != "sha256:" + description["sha256"]:
+            return result
+        with _request(asset_url(asset["browser_download_url"], release["tag_name"], FILES_NAME)) as response:
+            raw = response.read(size + 1)
+        if len(raw) != size or hashlib.sha256(raw).hexdigest() != description["sha256"]:
+            return result
+        files = validate_manifest(json.loads(raw), result.version)
+        plan = plan_files(root, current, files, cancel)
+        # Prefer a complete installer over hundreds of files if it would actually download less.
+        if plan is not None and plan.download_size >= result.size:
+            plan = None
+        return replace(result, file_plan=plan)
+    except Cancelled:
+        raise
+    except (OSError, ValueError, StopIteration, KeyError, UpdateError):
+        # Full installer remains a repair path, including migration from older update formats.
+        return result
+
+
+def prepare_update(release: Release, directory: Path, cancel: threading.Event, progress=lambda n,total:None,
+                   argv=None, status=lambda message:None):
+    from desktop.file_updates import PreparedUpdate, prepare_files
+    if release.file_plan is not None:
+        try:
+            return prepare_files(release.file_plan, directory, cancel, progress, argv)
+        except Cancelled:
+            raise
+        except Exception:
+            if cancel.is_set():
+                raise Cancelled()
+            status("Малое обновление недоступно. Загружаем полный установщик для восстановления…")
+    return PreparedUpdate("installer", download_installer(release, directory, cancel, progress))
 
 
 def download_installer(release: Release, directory: Path, cancel: threading.Event, progress=lambda done, total: None) -> Path:

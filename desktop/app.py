@@ -613,6 +613,23 @@ class Controller(QObject):
         for slot in self.slots:
             slot.feed.start()
         self.main.load(self.web_url(desktop=True))
+        self._report_update_start()
+
+    def _report_update_start(self) -> None:
+        """Acknowledge a successful native/backend startup to the file updater."""
+        from pathlib import Path
+        from desktop.distribution import atomic_json
+        raw = os.environ.get("RADAR_UPDATE_READY")
+        if not raw:
+            return
+        ready = Path(raw).resolve()
+        cache = (data_dir() / "updates").resolve()
+        if ready.name != "ready.json" or not ready.is_relative_to(cache):
+            return
+        try:
+            atomic_json(ready, {"version":VERSION, "pid":os.getpid()})
+        except OSError:
+            log.exception("cannot acknowledge update startup")
 
     def _sync_watch(self) -> None:
         """The desktop owns the list of extra coins: tell the server (also after reconnects)."""
@@ -880,25 +897,44 @@ class Controller(QObject):
             self.update_dialog = None
             dialog.deleteLater()
 
-    def _install_update(self, path: str, dialog) -> None:
+    def _install_update(self, prepared, dialog) -> None:
         from pathlib import Path
         from PySide6.QtCore import QProcess
+        from desktop.distribution import installed_root
+        from desktop.file_updates import PreparedUpdate
         from desktop.updates import installer_args
 
         if not getattr(sys, "frozen", False) or sys.platform != "win32":
             dialog._failed("Установка обновлений доступна в Windows-сборке .exe")
             return
-        installer = Path(path).resolve()
-        if installer.parent != (data_dir() / "updates").resolve() or not installer.is_file():
+        if not isinstance(prepared, PreparedUpdate):
+            dialog._failed("Некорректное подготовленное обновление")
+            return
+        path = Path(prepared.path).resolve()
+        cache = (data_dir() / "updates").resolve()
+        if not path.is_relative_to(cache) or not path.is_file():
             dialog._failed("Проверенный установщик не найден. Повторите загрузку")
             return
+        if prepared.mode == "files":
+            root = installed_root(Path(sys.executable))
+            helper = Path(prepared.launcher).resolve() if prepared.launcher else None
+            if root is None or helper is None or helper != path.parent / "apply.exe" or not helper.is_file():
+                dialog._failed("Программа применения обновления не найдена")
+                return
+            program = helper
+            arguments = ["--apply-plan", str(path), "--root", str(root), "--pid", str(os.getpid())]
+        elif prepared.mode == "installer" and path.parent == cache:
+            program, arguments = path, installer_args(os.getpid())
+        else:
+            dialog._failed("Неизвестный тип обновления")
+            return
         self.save_prefs()
-        started, _pid = QProcess.startDetached(str(installer), installer_args(os.getpid()))
+        started, _pid = QProcess.startDetached(str(program), arguments)
         if not started:
             dialog._failed("Не удалось запустить установщик. Приложение продолжает работать")
             return
         dialog.accept()
-        self.quit()  # the installer waits for this process to finish before replacing files
+        self.quit()  # the updater waits for this process, then atomically switches complete versions
 
     # ---- shutdown --------------------------------------------------------
     def save_prefs(self) -> None:

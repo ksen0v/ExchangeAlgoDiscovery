@@ -6,15 +6,18 @@ from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout
 
 from desktop.prefs import data_dir
-from desktop.updates import Cancelled, Release, check_release, download_installer
+from pathlib import Path
+from desktop.distribution import installed_root
+from desktop.updates import Cancelled, Release, check_release, prepare_update
 from desktop.version import VERSION
 
 
 class UpdateJob(QObject):
     checked = Signal(object)
-    downloaded = Signal(str)
+    downloaded = Signal(object)
     failed = Signal(str)
-    progress = Signal(int, int)
+    progress = Signal(object, object)
+    status = Signal(str)
 
     def __init__(self):
         super().__init__()  # no Qt parent: the Python worker retains this object until it exits
@@ -24,14 +27,18 @@ class UpdateJob(QObject):
         def run():
             try:
                 if release is None:
-                    result = check_release(VERSION)
+                    root = installed_root(Path(sys.executable)) if getattr(sys, "frozen", False) else None
+                    if root:
+                        self.status.emit("Проверяем выпуск и сравниваем файлы приложения…")
+                    result = check_release(VERSION, root, self.cancel)
                     if not self.cancel.is_set():
                         self.checked.emit(result)
                 else:
-                    path = download_installer(release, data_dir() / "updates", self.cancel,
-                                              lambda n, total: self.progress.emit(n, total))
+                    prepared = prepare_update(release, data_dir() / "updates", self.cancel,
+                                              lambda n, total: self.progress.emit(n, total),
+                                              argv=sys.argv[1:], status=self.status.emit)
                     if not self.cancel.is_set():
-                        self.downloaded.emit(str(path))
+                        self.downloaded.emit(prepared)
             except Cancelled:
                 pass
             except Exception as exc:
@@ -41,7 +48,7 @@ class UpdateJob(QObject):
 
 
 class UpdateDialog(QDialog):
-    install_requested = Signal(str)
+    install_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,6 +83,7 @@ class UpdateDialog(QDialog):
             self.job.cancel.set()
         job = UpdateJob()
         job.failed.connect(self._failed, Qt.ConnectionType.QueuedConnection)
+        job.status.connect(self._status, Qt.ConnectionType.QueuedConnection)
         self.job = job
         return job
 
@@ -100,7 +108,10 @@ class UpdateDialog(QDialog):
         if release is None:
             self.message.setText("У вас последняя опубликованная версия.")
         else:
-            self.message.setText(f"Доступна версия {release.version} ({release.size / 1024 / 1024:.0f} МБ).\n"
+            amount = release.download_size
+            size = f"{amount / 1024:.0f} КБ" if amount < 1024 * 1024 else f"{amount / 1024 / 1024:.1f} МБ"
+            kind = f"изменённых файлов: {len(release.file_plan.changed)}" if release.file_plan is not None else "полный установщик"
+            self.message.setText(f"Доступна версия {release.version}: {size}, {kind}.\n"
                                  "Настройки и база сохранятся. Приложение перезапустится после установки."
                                  + ("\nУстановка обновлений доступна в Windows-сборке .exe." if not frozen else ""))
 
@@ -114,7 +125,8 @@ class UpdateDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.show()
-        self.message.setText("Скачиваем обновление… Приложение продолжает работать.")
+        self.message.setText("Скачиваем изменённые файлы… Приложение продолжает работать."
+                             if self.release.file_plan is not None else "Скачиваем установщик… Приложение продолжает работать.")
         job = self._job()
         job.progress.connect(self._progress, Qt.ConnectionType.QueuedConnection)
         job.downloaded.connect(self._ready, Qt.ConnectionType.QueuedConnection)
@@ -123,7 +135,11 @@ class UpdateDialog(QDialog):
     def _progress(self, done, total):
         if self.job is None or self.job.cancel.is_set():
             return
-        self.progress.setValue(int(done * 100 / total))
+        self.progress.setValue(int(done * 100 / total) if total else 100)
+
+    def _status(self, message):
+        if self.job is not None and not self.job.cancel.is_set():
+            self.message.setText(message)
 
     def _ready(self, path):
         if self.job is None or self.job.cancel.is_set() or not self.isVisible():

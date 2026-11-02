@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from desktop.updates import SETUP_NAME
+from desktop.distribution import FILES_NAME, SETUP_NAME
 from desktop.version import VERSION
 
 root = Path(__file__).resolve().parent.parent
@@ -14,5 +14,9 @@ with installer.open("rb") as stream:
         digest.update(chunk)
 manifest = {"version": VERSION, "installer": SETUP_NAME, "sha256": digest.hexdigest(),
             "size": installer.stat().st_size}
+files = root / "dist" / FILES_NAME
+if files.is_file():
+    manifest["file_manifest"] = {"asset":FILES_NAME, "size":files.stat().st_size,
+                                 "sha256":hashlib.sha256(files.read_bytes()).hexdigest()}
 (installer.parent / "update.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(manifest))

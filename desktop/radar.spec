@@ -16,10 +16,14 @@ a = Analysis(  # noqa: F821
     pathex=[ROOT],
     hiddenimports=hidden,
     binaries=[],
-    datas=[(os.path.join(ROOT, "static"), "static")] + collect_data_files("ccxt"),
+    datas=[(os.path.join(ROOT, "static"), "static"), (os.path.join(ROOT, "build-info.json"), ".")] + collect_data_files("ccxt"),
     excludes=["tkinter", "pytest", "pandas", "sklearn", "dask", "pyarrow", "matplotlib", "PySide6.Qt3DCore", "PySide6.QtQuick3D", "PySide6.QtMultimedia", "PySide6.QtCharts",
-              "PySide6.QtDataVisualization", "PySide6.QtGraphs", "PySide6.QtBluetooth", "PySide6.QtSerialPort"],
-    noarchive=False,
+              "PySide6.QtDataVisualization", "PySide6.QtGraphs", "PySide6.QtBluetooth", "PySide6.QtSerialPort",
+              "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQml", "PySide6.QtOpenGL",
+              "PySide6.QtPositioning", "PySide6.QtPdf", "PySide6.QtPdfWidgets"],
+    # External compiled modules let a Python fix update a few .pyc files instead
+    # of retransmitting the entire ccxt/application PYZ archive inside the EXE.
+    noarchive=True,
 )
 
 
@@ -43,8 +47,8 @@ exe = EXE(  # noqa: F821
     a.scripts,
     [],
     exclude_binaries=True,
-    name="ManipulationRadar",
+    name="RadarApp",
     console=False,
     icon=ICON,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="ManipulationRadar")  # noqa: F821
+coll = COLLECT(exe, a.binaries, a.datas, name="RadarApp")  # noqa: F821
