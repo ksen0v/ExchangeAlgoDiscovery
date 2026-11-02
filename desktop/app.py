@@ -97,6 +97,7 @@ def dark_palette() -> QPalette:
 class DashboardBridge(QObject):
     themeChanged = Signal(str)
     overlaysChanged = Signal(str)
+    overlayAppearanceChanged = Signal(str)
 
     def __init__(self, ctl, parent, overlay=None):
         super().__init__(parent)
@@ -129,6 +130,16 @@ class DashboardBridge(QObject):
         overlay = self.ctl.module_overlays.get(key)
         if overlay:
             overlay.close()
+
+    @Slot(str)
+    def configureModuleOverlay(self, key):
+        overlay = self.ctl.module_overlays.get(key)
+        if overlay:
+            overlay.open_settings()
+
+    @Slot(result=str)
+    def currentOverlayAppearance(self):
+        return json.dumps(self.overlay.appearance() if self.overlay else None)
 
     @Slot(str)
     def saveModuleOverlay(self, raw):
@@ -169,12 +180,14 @@ class DashboardPage(QWebEnginePage):
         self.channel.registerObject("radarDesktop", self.bridge)
         self.setWebChannel(self.channel)
         if overlay:
+            self.setBackgroundColor(Qt.GlobalColor.transparent)
             bootstrap = QWebEngineScript()
             bootstrap.setName("radar-module-overlay")
             bootstrap.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
             bootstrap.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
             bootstrap.setSourceCode("window.radarOverlay=" + json.dumps({"id": overlay.key,
-                                    "coin": overlay.record["coin"], "module": overlay.record["module"]}) + ";")
+                                    "coin": overlay.record["coin"], "module": overlay.record["module"],
+                                    "appearance": overlay.appearance()}) + ";")
             self.scripts().insert(bootstrap)
         # Inject Qt's bundled JS into the HTTP dashboard, avoiding local-resource / CORS loads.
         resource = QFile(":/qtwebchannel/qwebchannel.js")
@@ -193,6 +206,9 @@ new QWebChannel(qt.webChannelTransport, function(c) {
   const apply = function(theme) { if (window.applyTheme) window.applyTheme(theme); };
   window.radarDesktop.themeChanged.connect(apply);
   window.radarDesktop.currentTheme(apply);
+  const appearance = function(raw) { if (window.applyOverlayAppearance) window.applyOverlayAppearance(JSON.parse(raw)); };
+  window.radarDesktop.overlayAppearanceChanged.connect(appearance);
+  window.radarDesktop.currentOverlayAppearance(appearance);
   document.dispatchEvent(new Event('radar-desktop-ready'));
 });""")
         self.scripts().insert(script)
@@ -1142,6 +1158,10 @@ class Controller(QObject):
         self.main.web.page().runJavaScript(script, lambda raw: QTimer.singleShot(250, lambda: self._selftest_dashboard(raw)))
 
     def _selftest_dashboard(self, raw) -> None:
+        from desktop.overlay_selftest import verify_controls
+        verify_controls(self, lambda controls: self._selftest_dashboard_result(raw, controls))
+
+    def _selftest_dashboard_result(self, raw, controls) -> None:
         try:
             dashboard = json.loads(raw) if isinstance(raw, str) else {}
         except (TypeError, ValueError):
@@ -1167,12 +1187,8 @@ class Controller(QObject):
             "extra": {s.coin: {"trades": s.got_trades, "rows": len(s.overlay.tape.rows)} for s in self.extra_slots},
             "module_overlays": self._selftest_module_checks,
         }
-        windows = list(self.module_overlays.values())
-        independent_lock = len(windows) >= 2
-        if independent_lock:
-            windows[0].set_locked(True)
-            independent_lock = bool(windows[0].windowFlags() & Qt.WindowType.WindowTransparentForInput) and not bool(windows[1].windowFlags() & Qt.WindowType.WindowTransparentForInput)
-            windows[0].set_locked(False)
+        independent_lock = controls.get("independent", False)
+        result["overlay_controls"] = controls
         result["module_overlay_lock"] = independent_lock
         result["no_native_toolbar"] = not any(w.inherits("QToolBar") for w in self.main.findChildren(QWidget))
         for key, overlay in self.module_overlays.items():
@@ -1182,6 +1198,7 @@ class Controller(QObject):
         ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits", "modular", "independent", "disposed", "preferences", "instruments", "toolbar")) and dashboard.get("panels") == 6
         ok = ok and all(result["metric_data"].values())
         ok = ok and independent_lock and len(result["module_overlays"]) == 2 and result["no_native_toolbar"]
+        ok = ok and all(controls.get(key) for key in ("automatic_transparency", "transparent_pixels", "controls_separate", "body_passes", "menu_accessible", "unlock_by_header", "opaque_pixels", "opaque_blocks"))
         ok = ok and all(item.get("coin") == "CIETH" and item.get("ready") and item.get("isolated") for item in result["module_overlays"].values())
         result["ok"] = ok
         (out / "selftest.json").write_text(json.dumps(result, indent=2), "utf-8")

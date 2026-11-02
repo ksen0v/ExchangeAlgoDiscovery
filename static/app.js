@@ -8,10 +8,25 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 let theme = new URLSearchParams(location.search).get("theme") || store.get("theme", "dark");
+function applyOverlayAppearance(value, redraw=true) {
+  if(!window.radarOverlay||!value)return;
+  const raw=Number(value.background_opacity),alpha=Number.isFinite(raw)?Math.max(0,Math.min(.9,raw)):.25;
+  const appearance={transparent:value.transparent===true,background_opacity:alpha};
+  window.radarOverlay.appearance=appearance;
+  document.documentElement.classList.add('overlay-host');
+  document.body.dataset.overlayTransparent=String(appearance.transparent);
+  const rgb=theme==='light'?'250,251,253':'24,26,29';
+  // Alpha 1/255 is visually clear but preserves hit testing when click-through is off.
+  document.documentElement.style.setProperty('--overlay-surface',`rgba(${rgb},${appearance.transparent?Math.max(1/255,alpha):1})`);
+  document.documentElement.style.setProperty('--overlay-controls',`rgba(${rgb},.94)`);
+  if(redraw)document.dispatchEvent(new Event('radar-theme'));
+}
+window.applyOverlayAppearance=applyOverlayAppearance;
 function applyTheme(value, notify = false) {
   theme = value === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = theme;
   store.set("theme", theme);
+  applyOverlayAppearance(window.radarOverlay?.appearance,false);
   $("themeBtn").textContent = theme === "dark" ? "Светлая тема" : "Тёмная тема";
   document.dispatchEvent(new Event("radar-theme"));
   if (window.A) rebuildTape();
