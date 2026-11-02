@@ -20,7 +20,6 @@ class RadarChart {
     this.cross.tabIndex = 0;
     this.cross.setAttribute("role", "img");
     this.cross.setAttribute("aria-label", options.label || "Интерактивный график");
-    this.cross.title = "Тяни график — перемещение · колесо — масштаб · тяни правую шкалу — масштаб значений · двойной клик — к текущему времени";
     this.cross.addEventListener("pointerdown", e => this.down(e));
     this.cross.addEventListener("pointermove", e => this.move(e));
     this.cross.addEventListener("pointerup", e => this.up(e));
