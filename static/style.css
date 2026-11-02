@@ -344,7 +344,16 @@ th.sorted::after { content: " ▾"; }
 .a-venues, .a-oi { grid-column: span 6; max-height: 55vh; }
 .venue-tools { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
 .venue-tools input { min-width: 0; flex: 1; }
-.venue-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-height: 45vh; overflow: auto; }
+/* Reserve the list area and scrollbar space so filtering never resizes the dialog. */
+.venue-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  height: 45vh;
+  align-content: start;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
 .venue-grid .check { display: flex; flex-direction: row; align-items: center; gap: 7px; padding: 6px; border-radius: 4px; background: var(--panel-2); }
 .venue-grid small { display: block; font-size: 10px; color: var(--muted); }
 #venuesDlg > form > .check { display: flex; flex-direction: row; align-items: center; margin-top: 12px; }
