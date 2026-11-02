@@ -21,13 +21,11 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
-    QSizePolicy,
     QStackedWidget,
     QSystemTrayIcon,
     QToolButton,
@@ -850,6 +848,10 @@ class Controller(QObject):
             self.save_prefs()
 
     def _set_locked(self, locked: bool) -> None:
+        if self.act_lock.isChecked() != locked:
+            self.act_lock.blockSignals(True)
+            self.act_lock.setChecked(locked)
+            self.act_lock.blockSignals(False)
         for slot in self.slots:
             slot.overlay.set_locked(locked)
         for overlay in self.metrics.values():
@@ -1056,10 +1058,10 @@ class Controller(QObject):
           try {
             if (!S.coin) await new Promise(resolve => setTimeout(resolve, 800));
             const original = S.coin || (await api('/api/state')).coin;
-            for (const coin of ['CIETH','CISOL','CIBTC']) await api('/api/venues',{method:'PUT',body:JSON.stringify({coin,venues:['Binance']})});
+            for (const coin of ['CIETH','CISOL','CIBTC']) await api('/api/venues',{method:'PUT',body:JSON.stringify({coin,venues:['Binance','Bybit','OKX','KuCoin']})});
             await api('/api/instruments',{method:'POST',body:JSON.stringify({coins:['CIETH','CISOL','CIBTC']})});
             await selectInstrument('CIETH');
-            for(const type of ['tape','oiChart']) {const instance=Desk.ofType(type)[0]; if(instance)Desk.openOverlay(instance.id);}
+            for(const type of ['tape','oiChart']) {const instance=Desk.ofType(type)[0];if(instance){const minimum=instance.p.minUsd;if(type==='tape')instance.p.minUsd=0;Desk.openOverlay(instance.id);if(type==='tape')instance.p.minUsd=minimum;}}
             await selectInstrument(original);
             S.instruments=(await api('/api/instruments')).coins;renderInstruments();
             window.ciInstruments = S.coin === original && S.instruments.length >= 4 && S.coinCache.has('CIETH');
@@ -1079,7 +1081,7 @@ class Controller(QObject):
         for key, overlay in self.module_overlays.items():
             if overlay.web:
                 overlay.web.page().runJavaScript("""JSON.stringify({coin:S.coin,type:Desk.active.modules[0].type,
-                    ready:!!A.snap||S.tape.length>0,rows:S.tape.length,
+                    ready:Desk.has('tape')?S.tape.length>0:!!A.snap&&Desk.ofType('oiChart')[0].chart.points.length>0,rows:S.tape.length,
                     isolated:Desk.model.spaces.length===1&&Desk.active.modules.length===1,
                     errors:window.ciInstrumentError||'',settings:Desk.active.modules[0].settings})""",
                     lambda raw, name=key: self._selftest_module_checks.update({name: json.loads(raw) if isinstance(raw,str) else {}}))

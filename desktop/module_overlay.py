@@ -63,13 +63,14 @@ class ModuleOverlay(QWidget):
         self.header.installEventFilter(self)
         self.apply_theme(ctl.prefs.theme)
         geometry = record.get("geometry", "")
-        if isinstance(geometry, str) and geometry:
-            self.restoreGeometry(QByteArray.fromHex(geometry.encode()))
+        restored = isinstance(geometry, str) and bool(geometry) and self.restoreGeometry(QByteArray.fromHex(geometry.encode()))
         from desktop.app import on_screen
-        if not on_screen(self.geometry()):
+        if not restored or not on_screen(self.geometry()):
             available = ctl.app.primaryScreen().availableGeometry()
             self.resize(min(480, available.width()), min(330, available.height()))
-            self.move(available.left() + 30, available.top() + 60)
+            offset = len(getattr(ctl, "module_overlays", {})) % 6 * 24
+            self.move(available.left() + min(30 + offset, max(0, available.width() - self.width())),
+                      available.top() + min(60 + offset, max(0, available.height() - self.height())))
         self.set_locked(bool(record.get("locked")), persist=False)
 
     def eventFilter(self, obj, event):

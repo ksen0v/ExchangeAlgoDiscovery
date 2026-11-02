@@ -234,8 +234,12 @@ def test_removing_instrument_stops_only_its_tasks_and_preserves_settings(client)
     assert all(not t.cancelled() for t in kept.tasks.values())
     assert client.get("/api/analytics?coin=PEPE").status_code == 404
     assert client.get("/api/venues?coin=PEPE").json()["venues"] == ["Binance"]
-    assert client.delete("/api/instruments/WIF").status_code == 200
-    assert client.delete("/api/instruments/DEMOX").status_code == 400
+    template = main.S.manager.instruments["DEMOX"]
+    template.analytics.cvd_points.append([0, 1, 2, None])
+    assert client.delete("/api/instruments/DEMOX").status_code == 200
+    assert not template.detector.states and not template.analytics.cvd_points
+    assert client.get("/api/state").json()["coin"] == "WIF"
+    assert client.delete("/api/instruments/WIF").status_code == 400
 
 
 def test_secondary_coin_has_full_analytics_ws_without_changing_selected_instrument(client):
@@ -267,6 +271,33 @@ def test_instrument_list_and_selection_survive_restart(client):
         finally:
             await db.close()
     assert asyncio.run(saved()) == (["DEMOX","WIF","PEPE"], "PEPE")
+
+
+def test_legacy_watch_migrates_to_full_sessions_and_restores_order_after_restart(tmp_path, monkeypatch):
+    import asyncio
+    from app.storage import Storage
+
+    monkeypatch.setattr(settings, "demo", True)
+    monkeypatch.setattr(settings, "db_path", str(tmp_path / "legacy.db"))
+    async def legacy_preferences():
+        db = Storage(settings.db_path)
+        await db.open()
+        try:
+            await db.set("coin", "ETH")
+            await db.set("watch", ["WIF", "PEPE"])
+            await db.set("venue_selection", {c:["Binance"] for c in ["ETH","WIF","PEPE","SOL"]})
+        finally:
+            await db.close()
+    asyncio.run(legacy_preferences())
+    with TestClient(main.app) as first:
+        assert [i["coin"] for i in first.get("/api/state").json()["instruments"]] == ["ETH","WIF","PEPE"]
+        assert first.get("/api/analytics?coin=WIF").json()["coin"] == "WIF"
+        first.post("/api/coin", json={"coin":"SOL"})
+        first.post("/api/coin", json={"coin":"WIF"})
+    with TestClient(main.app) as second:
+        state = second.get("/api/state").json()
+        assert state["coin"] == "WIF"
+        assert [i["coin"] for i in state["instruments"]] == ["ETH","WIF","PEPE","SOL"]
 
 
 def test_walls_and_lite_snapshots_route_by_instrument():

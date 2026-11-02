@@ -150,16 +150,37 @@ class Manager:
                 self._add(coin)
             for coin in list(self.instruments):
                 if coin not in wanted:
-                    item = self.instruments.pop(coin)
-                    if item.analytics:
-                        item.analytics.shutdown()
-                    await self._halt(item)
+                    await self._remove(coin)
             self.instruments = {coin: self.instruments[coin] for coin in wanted}
             if self.coin not in self.instruments:
                 self.coin = self.hub.primary = wanted[0]
             self.hub._tape = [r for r in self.hub._tape if r.get("coin") in self.instruments]
             self.hub._walls = [r for r in self.hub._walls if r.get("coin") in self.instruments]
         return list(self.instruments)
+
+    async def _remove(self, coin: str) -> None:
+        item = self.instruments.pop(coin)
+        if item.analytics:
+            item.analytics.shutdown()
+        await self._halt(item)
+        # The first detector also holds the shared configuration template, but must
+        # not retain the removed instrument's trade and chart buffers.
+        if item.detector is self._detector:
+            item.detector.reset("")
+            if item.analytics:
+                item.analytics.reset("")
+
+    async def remove_instrument(self, coin: str) -> None:
+        async with self._lock:
+            if coin not in self.instruments:
+                raise ValueError("Инструмент уже удалён")
+            if len(self.instruments) == 1:
+                raise ValueError("Оставьте хотя бы один инструмент")
+            await self._remove(coin)
+            if self.coin == coin:
+                self.coin = self.hub.primary = next(iter(self.instruments))
+            for buffer in (self.hub._tape, self.hub._walls):
+                buffer[:] = [row for row in buffer if row.get("coin") != coin]
 
     async def set_watch(self, coins: list[str]) -> list[str]:
         await self.set_instruments([self.coin, *coins])

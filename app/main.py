@@ -277,10 +277,10 @@ async def remove_instrument(coin: str) -> dict:
     coin = valid_coin(coin)
     if coin not in S.manager.instruments:
         raise HTTPException(404, "Инструмент уже удалён")
-    remaining = [c for c in S.manager.instruments if c != coin]
-    if not remaining:
-        raise HTTPException(400, "Оставьте хотя бы один инструмент")
-    await S.manager.set_instruments(remaining)
+    try:
+        await S.manager.remove_instrument(coin)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     await instruments_changed()
     return await get_instruments()
 
