@@ -22,8 +22,11 @@ class Storage:
     def __init__(self, path: str):
         self.path = path
         self.db: aiosqlite.Connection | None = None
+        self._settings_lock = None
 
     async def open(self) -> None:
+        import asyncio
+        self._settings_lock = asyncio.Lock()
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self.db = await aiosqlite.connect(self.path)
         await self.db.executescript(SCHEMA)
@@ -62,8 +65,12 @@ class Storage:
         return json.loads(row[0]) if row else default
 
     async def set(self, key: str, value) -> None:
-        await self.db.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, json.dumps(value)),
-        )
-        await self.db.commit()
+        await self.set_many({key:value})
+
+    async def set_many(self, values: dict) -> None:
+        async with self._settings_lock:
+            await self.db.executemany(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [(key, json.dumps(value)) for key, value in values.items()],
+            )
+            await self.db.commit()

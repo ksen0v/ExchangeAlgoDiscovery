@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
@@ -255,19 +255,18 @@ def valid_coin(raw: str) -> str:
 
 async def instruments_changed() -> None:
     S.detector, S.analytics = S.manager.detector, S.manager.analytics
-    await S.storage.set("instruments", list(S.manager.instruments))
-    await S.storage.set("coin", S.manager.coin)
-    await S.storage.set("watch", list(S.manager.watch))
+    await S.storage.set_many({"instruments":list(S.manager.instruments),"coin":S.manager.coin,"watch":list(S.manager.watch)})
     S.hub.broadcast({"type": "instruments", "coins": S.manager.summaries(), "selected": S.manager.coin})
     S.hub.broadcast({"type": "coin", "coin": S.manager.coin})
     S.hub.broadcast({"type": "watch", "coins": list(S.manager.watch)})
 
 
 @app.post("/api/coin")
-async def set_coin(body: CoinIn) -> dict:
+async def set_coin(body: CoinIn, background_tasks: BackgroundTasks) -> dict:
     coin = valid_coin(body.coin)
-    await S.manager.set_coin(coin)
+    await S.manager.set_coin(coin, deferred=True)
     await instruments_changed()
+    background_tasks.add_task(S.manager.start_pending)
     return {"coin": coin}
 
 
@@ -293,11 +292,21 @@ class WatchIn(BaseModel):
     coins: list[str]
 
 
+class InstrumentsIn(WatchIn):
+    select: str | None = None
+
+
 @app.post("/api/instruments")
-async def add_instruments(body: WatchIn) -> dict:
+async def add_instruments(body: InstrumentsIn, background_tasks: BackgroundTasks) -> dict:
     coins = [valid_coin(c) for c in body.coins]
-    await S.manager.ensure_instruments(coins)
+    selected = valid_coin(body.select) if body.select is not None else None
+    if selected is not None and selected not in coins and selected not in S.manager.instruments:
+        raise HTTPException(400, "Выберите добавляемый инструмент")
+    await S.manager.ensure_instruments(coins, deferred=True)
+    if selected is not None:
+        await S.manager.set_coin(selected, deferred=True)
     await instruments_changed()
+    background_tasks.add_task(S.manager.start_pending)
     return await get_instruments()
 
 

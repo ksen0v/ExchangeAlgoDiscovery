@@ -1074,6 +1074,22 @@ class Controller(QObject):
           try {
             if (!S.coin) await new Promise(resolve => setTimeout(resolve, 800));
             const original = S.coin || (await api('/api/state')).coin;
+            const realApi=api;let releaseRegistration;
+            await realApi('/api/venues',{method:'PUT',body:JSON.stringify({coin:'CIFEED',venues:['Binance']})});
+            api=async function(path,options){if(path==='/api/instruments'&&options?.method==='POST'&&JSON.parse(options.body).coins.includes('CIFEED'))await new Promise(resolve=>releaseRegistration=resolve);return realApi(path,options);};
+            try {
+              document.getElementById('addInstrumentBtn').click();
+              document.getElementById('coinInput').value='CIFEED';
+              document.getElementById('coinForm').requestSubmit();
+              const pending=Instruments.pending.get('CIFEED');
+              window.ciImmediateAdd=!!pending&&S.coin==='CIFEED'&&!document.getElementById('instrumentDlg').open&&!!document.querySelector('[data-instrument="CIFEED"]')&&document.querySelector('[data-instrument-progress="CIFEED"]').textContent.includes('сохраняем');
+              const canonical=await realApi('/api/instruments');S.instruments=canonical.coins;renderInstruments();
+              window.ciImmediateAdd=window.ciImmediateAdd&&!!document.querySelector('[data-instrument="CIFEED"]');
+              releaseRegistration();await pending.task;
+              window.ciAddConfirmed=!Instruments.pending.has('CIFEED')&&S.instruments.some(i=>i.coin==='CIFEED')&&!!document.querySelector('[data-instrument-progress="CIFEED"]');
+            } finally {api=realApi;releaseRegistration?.();}
+            await realApi('/api/instruments/CIFEED',{method:'DELETE'});
+            await selectInstrument(original);
             for (const coin of ['CIETH','CISOL','CIBTC']) await api('/api/venues',{method:'PUT',body:JSON.stringify({coin,venues:['Binance','Bybit','OKX','KuCoin']})});
             await api('/api/instruments',{method:'POST',body:JSON.stringify({coins:['CIETH','CISOL','CIBTC']})});
             await selectInstrument('CIETH');
@@ -1146,6 +1162,7 @@ class Controller(QObject):
           return {ready: !!A.snap && Desk.ofType('oiChart')[0].root.querySelectorAll('canvas').length === 2,
                   bridge: !!window.radarDesktop, interactive,
                   instruments: !!window.ciInstruments && document.querySelectorAll('[data-instrument]').length >= 4,
+                  immediateAdd: !!window.ciImmediateAdd && !!window.ciAddConfirmed,
                   toolbar: !document.querySelector('.topbar #coinForm') && !!document.getElementById('appMenuBtn'),
                   themes: light !== dark,
                   modular, independent, disposed, preferences: cached === localStorage.getItem('workspaces.v1'),
@@ -1195,7 +1212,7 @@ class Controller(QObject):
             overlay.grab().save(str(out / f"selftest-module-{overlay.record['module']['type']}.png"))
         ok = result["backend"] and result["feed_trades"] > 0 and result["dashboard_loaded"] and not result["dashboard_errors"]
         ok = ok and all(v["trades"] > 0 for v in result["extra"].values())
-        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits", "modular", "independent", "disposed", "preferences", "instruments", "toolbar")) and dashboard.get("panels") == 6
+        ok = ok and all(dashboard.get(key) for key in ("ready", "bridge", "interactive", "themes", "fits", "modular", "independent", "disposed", "preferences", "instruments", "toolbar", "immediateAdd")) and dashboard.get("panels") == 6
         ok = ok and all(result["metric_data"].values())
         ok = ok and independent_lock and len(result["module_overlays"]) == 2 and result["no_native_toolbar"]
         ok = ok and all(controls.get(key) for key in ("automatic_transparency", "transparent_pixels", "controls_separate", "body_passes", "menu_accessible", "unlock_by_header", "opaque_pixels", "opaque_blocks"))
