@@ -228,10 +228,57 @@ def test_module_overlay_click_through_is_independent_and_preserves_geometry(qapp
     first, second = ModuleOverlay(ctl,"BTC:a",dict(record)), ModuleOverlay(ctl,"BTC:b",dict(record))
     first.setGeometry(100, 100, 400, 250)
     before = first.geometry()
+    first.show(); second.show(); qapp.processEvents()
     first.set_locked(True)
     assert first.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert not second.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert first.geometry() == before
-    first.set_locked(False)
+    assert first.record["transparent"] is True
+    assert first.locked_header.isVisible() and first.locked_header.isWindow()
+    assert not first.locked_header.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    first.locked_header.lock_button.click()
     assert not first.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    assert not first.locked_header.isVisible()
+    first.set_locked(True)
+    first.set_appearance(False, .4)
+    assert not first.record["locked"] and not first.record["transparent"]
+    assert first.record["background_opacity"] == .4
+    assert not first.locked_header.isVisible()
     first.close(); second.close()
+    first.deleteLater(); second.deleteLater()
+
+
+@pytest.mark.parametrize("value,expected", [(None,.25),("0.4",.25),(True,.25),(float('nan'),.25),
+                                          (float('inf'),.25),(-1,0),(2,.9),(.4,.4)])
+def test_overlay_background_opacity_is_bounded(value, expected):
+    from desktop.module_overlay import background_opacity
+    assert background_opacity(value) == expected
+
+
+def test_locked_overlay_preferences_migrate_and_cancel_restores_appearance(qapp, tmp_path):
+    from types import SimpleNamespace
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QIcon
+    from PySide6.QtWidgets import QCheckBox, QSlider
+    from desktop.module_overlay import ModuleOverlay
+    ctl = SimpleNamespace(app=qapp, icon=QIcon(), prefs=Prefs(), overlay_state_changed=lambda: None)
+    record = {"coin":"BTC","module":{"type":"tape","id":"a","settings":{"minUsd":1234}},"locked":True}
+    overlay = ModuleOverlay(ctl,"BTC:a",record)
+    overlay.show(); qapp.processEvents()
+    assert overlay.appearance() == {"transparent":True,"background_opacity":.25}
+    def cancel_preview():
+        dialog = qapp.activeModalWidget()
+        try:
+            dialog.findChild(QCheckBox).setChecked(False)
+            dialog.findChild(QSlider).setValue(80)
+        finally:
+            dialog.reject()
+    QTimer.singleShot(0, cancel_preview)
+    overlay.open_settings()
+    assert overlay.record["locked"] and overlay.appearance() == {"transparent":True,"background_opacity":.25}
+    path = tmp_path / "desktop.json"
+    Prefs(module_overlays={"BTC:a":overlay.save()}).save(path)
+    restored = Prefs.load(path).module_overlays["BTC:a"]
+    assert restored["transparent"] and restored["locked"] and restored["background_opacity"] == .25
+    assert restored["module"]["settings"]["minUsd"] == 1234
+    overlay.close(); overlay.deleteLater()

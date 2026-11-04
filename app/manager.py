@@ -33,6 +33,7 @@ class Instrument:
         self.marked: set[str] = set()
         self.repeats = RepeatTracker()
         self.snapshot: dict = {"type": "snapshot", "coin": coin, "ts": 0, "streams": []}
+        self.pending_start = False
         detector.reset(coin)
         if analytics:
             analytics.reset(coin)
@@ -66,7 +67,7 @@ class Manager:
         """Compatibility for older clients; every instrument now has full analytics."""
         return {c: item for c, item in self.instruments.items() if c != self.coin}
 
-    def _add(self, coin: str) -> None:
+    def _add(self, coin: str, deferred=False) -> None:
         if coin in self.instruments:
             return
         if not self.instruments and not self._detector.coin:
@@ -77,7 +78,8 @@ class Manager:
             analytics = Analytics(demo=self._analytics.demo) if self._analytics else None
         item = Instrument(coin, detector, analytics)
         self.instruments[coin] = item
-        item.streams, item.tasks = self._launch(item)
+        item.streams, item.tasks = self._launch(item, start=not deferred)
+        item.pending_start = deferred
         log.info("monitoring %s on %d streams", coin, len(item.streams))
 
     def _on_trades(self, item: Instrument, stream: Stream, trades: list[Trade], live: bool) -> None:
@@ -102,7 +104,7 @@ class Manager:
         if events:
             self.hub.push_walls([{**event, "coin": item.coin} for event in events])
 
-    def _launch(self, item: Instrument, only=None) -> tuple[dict, dict]:
+    def _launch(self, item: Instrument, only=None, start=True) -> tuple[dict, dict]:
         streams, tasks = {}, {}
         selected = self.venue_selection.get(item.coin)
         for venue in VENUES:
@@ -116,7 +118,8 @@ class Manager:
                 stream.on_book = partial(self._on_book, item)
                 stream.books_on = partial(self._books_on, item, stream.key)
                 streams[stream.key] = stream
-                tasks[stream.key] = asyncio.create_task(stream.run(), name=f"{item.coin}:{stream.key}")
+                if start:
+                    tasks[stream.key] = asyncio.create_task(stream.run(), name=f"{item.coin}:{stream.key}")
         return streams, tasks
 
     @staticmethod
@@ -134,11 +137,11 @@ class Manager:
         await asyncio.gather(*tasks.values(), return_exceptions=True)
         await asyncio.gather(*(s.close() for s in streams.values()), return_exceptions=True)
 
-    async def set_coin(self, coin: str) -> None:
+    async def set_coin(self, coin: str, deferred=False) -> None:
         """Add/select a coin without restarting collectors or resetting history."""
         coin = coin.strip().upper()
         async with self._lock:
-            self._add(coin)
+            self._add(coin, deferred=deferred)
             self.coin = self.hub.primary = coin
 
     async def set_instruments(self, coins: list[str]) -> list[str]:
@@ -186,10 +189,20 @@ class Manager:
         await self.set_instruments([self.coin, *coins])
         return list(self.watch)
 
-    async def ensure_instruments(self, coins: list[str]) -> None:
+    async def ensure_instruments(self, coins: list[str], deferred=False) -> None:
         async with self._lock:
             for coin in coins:
-                self._add(coin)
+                self._add(coin, deferred=deferred)
+
+    async def start_pending(self) -> None:
+        """Called after registration was sent to the client, never before its response."""
+        async with self._lock:
+            for item in self.instruments.values():
+                if item.pending_start:
+                    item.pending_start = False
+                    for key, stream in item.streams.items():
+                        if key not in item.tasks:
+                            item.tasks[key] = asyncio.create_task(stream.run(), name=f"{item.coin}:{key}")
 
     async def set_venues(self, coin: str, venues: list[str] | None) -> None:
         async with self._lock:
@@ -220,9 +233,22 @@ class Manager:
                 buffer[:] = [r for r in buffer if r.get("coin") != coin or r["key"] not in removed]
 
     def summaries(self) -> list[dict]:
-        return [{"coin": c, "price": item.detector.consensus,
-                 "live": sum(s.status in ("live", "polling") for s in item.streams.values()),
-                 "total": len(item.streams)} for c, item in self.instruments.items()]
+        summaries = []
+        for coin, item in self.instruments.items():
+            venues = {}
+            for stream in item.streams.values():
+                venues.setdefault(stream.venue, set()).add(stream.status)
+            connected = sum(bool(statuses & {"live", "polling"}) for statuses in venues.values())
+            pending = sum(bool(statuses & {"init", "connecting"}) for statuses in venues.values())
+            errors = sum("error" in statuses and not statuses & {"live", "polling"} for statuses in venues.values())
+            state = ("disabled" if not venues else "connecting" if item.pending_start or pending
+                     else "live" if connected else "error" if errors else "unavailable")
+            summaries.append({"coin":coin,"price":item.detector.consensus,
+                              "live":sum(s.status in ("live", "polling") for s in item.streams.values()),
+                              "total":len(item.streams),"state":state,"connected_venues":connected,
+                              "total_venues":len(venues),"pending_venues":pending,"error_venues":errors,
+                              "starting":item.pending_start})
+        return summaries
 
     def sync_connected(self) -> None:
         for item in self.instruments.values():

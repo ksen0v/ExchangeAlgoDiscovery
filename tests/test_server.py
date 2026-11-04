@@ -128,6 +128,18 @@ def test_switching_coin_works(client):
     assert client.get("/api/state").json()["coin"] == "DEMOY"
 
 
+def test_register_and_select_return_the_list_without_waiting_for_connections(client):
+    result = client.post("/api/instruments", json={"coins":["NEXT"],"select":"NEXT"})
+    assert result.status_code == 200
+    assert result.json()["selected"] == "NEXT"
+    row = next(i for i in result.json()["coins"] if i["coin"] == "NEXT")
+    assert row["state"] == "connecting" and row["connected_venues"] == 0
+    assert row["starting"] and row["total_venues"] > 0
+    assert client.get("/api/state").json()["coin"] == "NEXT"
+    assert client.post("/api/instruments", json={"coins":["OK"],"select":"BAD-COIN"}).status_code == 400
+    assert "OK" not in main.S.manager.instruments
+
+
 def test_instruments_have_no_three_coin_limit_and_selection_keeps_collectors(client):
     r = client.put("/api/watch", json={"coins": ["pepe", "WIF", "pepe"]})
     assert r.status_code == 200 and r.json()["coins"] == ["PEPE", "WIF"]

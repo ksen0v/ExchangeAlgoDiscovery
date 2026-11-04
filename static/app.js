@@ -8,10 +8,25 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 let theme = new URLSearchParams(location.search).get("theme") || store.get("theme", "dark");
+function applyOverlayAppearance(value, redraw=true) {
+  if(!window.radarOverlay||!value)return;
+  const raw=Number(value.background_opacity),alpha=Number.isFinite(raw)?Math.max(0,Math.min(.9,raw)):.25;
+  const appearance={transparent:value.transparent===true,background_opacity:alpha};
+  window.radarOverlay.appearance=appearance;
+  document.documentElement.classList.add('overlay-host');
+  document.body.dataset.overlayTransparent=String(appearance.transparent);
+  const rgb=theme==='light'?'250,251,253':'24,26,29';
+  // Alpha 1/255 is visually clear but preserves hit testing when click-through is off.
+  document.documentElement.style.setProperty('--overlay-surface',`rgba(${rgb},${appearance.transparent?Math.max(1/255,alpha):1})`);
+  document.documentElement.style.setProperty('--overlay-controls',`rgba(${rgb},.94)`);
+  if(redraw)document.dispatchEvent(new Event('radar-theme'));
+}
+window.applyOverlayAppearance=applyOverlayAppearance;
 function applyTheme(value, notify = false) {
   theme = value === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = theme;
   store.set("theme", theme);
+  applyOverlayAppearance(window.radarOverlay?.appearance,false);
   $("themeBtn").textContent = theme === "dark" ? "Светлая тема" : "Тёмная тема";
   document.dispatchEvent(new Event("radar-theme"));
   if (window.A) rebuildTape();
@@ -227,7 +242,7 @@ function alertHtml(a, fresh) {
 function renderAlerts(list) {S.alerts=list.slice(0,200);window.Desk?.update('alerts');}
 function addAlert(alert) {S.alerts=[alert,...S.alerts].slice(0,200);window.Desk?.update('alerts');beep();}
 async function loadAlerts() {
-  if(!window.Desk?.has('alerts'))return;
+  if(!window.Desk?.has('alerts')||!instrumentReady())return;
   const coin=S.coin,request=++S.alertRequest;
   try {const rows=await api('/api/alerts?coin='+encodeURIComponent(coin)+'&limit=100');if(coin!==S.coin||request!==S.alertRequest)return;
     const combined=[...S.alerts,...rows],seen=new Set();renderAlerts(combined.filter(row=>{const key=row.id??JSON.stringify([row.ts,row.key,row.score]);if(seen.has(key))return false;seen.add(key);return true;}).sort((a,b)=>b.ts-a.ts));
@@ -251,7 +266,7 @@ function wallHtml(e, fresh) {
 function renderWalls(list) {S.walls=list.slice(0,300);window.Desk?.update('walls');}
 function addWalls(rows) {S.walls=rows.slice().reverse().concat(S.walls).slice(0,300);window.Desk?.update('walls');}
 async function loadWalls() {
-  if(!window.Desk?.has('walls'))return;
+  if(!window.Desk?.has('walls')||!instrumentReady())return;
   const coin=S.coin,request=++S.wallRequest;
   try {const rows=await api('/api/walls?limit=150&coin='+encodeURIComponent(coin));if(coin!==S.coin||request!==S.wallRequest)return;
     const seen=new Set();renderWalls([...S.walls,...rows].filter(row=>{const key=JSON.stringify([row.ts,row.key,row.event,row.price,row.usd]);if(seen.has(key))return false;seen.add(key);return true;}).sort((a,b)=>b.ts-a.ts));
@@ -292,52 +307,96 @@ function setCoin(coin) {
   S.tape=cached?.tape||[];S.alerts=cached?.alerts||[];S.walls=cached?.walls||[];S.streams=cached?.streams||[];S.alertRequest++;S.wallRequest++;
   $('consensus').textContent=cached?.price||'—';
   if(window.A)A.snap=cached?.snap||null;window.resetOiChart?.();S.selected.clear();store.set('selected',[]);
-  window.Desk?.resetCoin();sendFilter();loadAlerts();loadWalls();
-  if(window.A&&window.Desk?.filter().analytics)api('/api/analytics?coin='+encodeURIComponent(coin)).then(onAnalytics).catch(()=>{});
+  window.Desk?.resetCoin();startCoinData();
 }
 
-const Instruments={busy:false,target:null};
+const Instruments={busy:false,target:null,task:null,intent:0,pending:new Map()};
+function instrumentReady(coin=S.coin){return !Instruments.pending.has(coin);}
+function startCoinData(){
+  sendFilter();if(!instrumentReady())return;
+  loadAlerts();loadWalls();
+  if(S.coin&&window.A&&window.Desk?.filter().analytics)api('/api/analytics?coin='+encodeURIComponent(S.coin)).then(onAnalytics).catch(()=>{});
+}
 async function selectInstrument(coin){
+  ++Instruments.intent;setCoin(coin);
   Instruments.target=coin;
-  if(Instruments.busy)return;
+  if(Instruments.busy)return Instruments.task;
   Instruments.busy=true;
-  try{while(Instruments.target){const wanted=Instruments.target;Instruments.target=null;
-    const selected=await api('/api/coin',{method:'POST',body:JSON.stringify({coin:wanted})});
-    if(!Instruments.target)setCoin(selected.coin);
-  }}finally{Instruments.busy=false;}
+  Instruments.task=(async()=>{try{while(Instruments.target){const wanted=Instruments.target,revision=Instruments.intent;Instruments.target=null;
+      const selected=await api('/api/coin',{method:'POST',body:JSON.stringify({coin:wanted})});
+      if(revision===Instruments.intent)setCoin(selected.coin);
+    }}finally{Instruments.busy=false;}})();
+  return Instruments.task;
+}
+function instrumentRows(){
+  const rows=new Map(S.instruments.map(i=>[i.coin,i]));
+  for(const [coin,pending] of Instruments.pending)rows.set(coin,{...(rows.get(coin)||{coin}),local:pending});
+  return [...rows.values()];
+}
+function instrumentProgress(i){
+  if(i.local?.error)return 'Не удалось добавить · повторить';
+  if(i.local)return 'Добавлено · сохраняем…';
+  const count=`${i.connected_venues||0}/${i.total_venues||0}`;
+  if(i.state==='connecting')return `Подключаем биржи · ${count}`;
+  if(i.state==='disabled')return 'Биржи отключены';
+  if(i.state==='unavailable')return 'Нет доступных пар';
+  if(i.state==='error')return 'Ошибка подключения · повторяем';
+  return i.total_venues!=null?`Биржи: ${count}`:'';
 }
 function renderInstruments(){
-  const list=$('instrumentList');
-  const structure=JSON.stringify(S.instruments.map(i=>[i.coin,i.coin===S.coin]));
+  const list=$('instrumentList'),rows=instrumentRows();
+  const structure=JSON.stringify(rows.map(i=>[i.coin,i.coin===S.coin,!!i.local,!!i.local?.error]));
   if(list.dataset.structure!==structure){
     list.dataset.structure=structure;
-    list.innerHTML=S.instruments.map(i=>`<div class="instrument-entry ${i.coin===S.coin?'active':''}"><button class="instrument-link" data-instrument="${esc(i.coin)}" ${i.coin===S.coin?'aria-current="true"':''}><span class="instrument-symbol">${esc(i.coin.slice(0,1))}</span><span><b>${esc(i.coin)}</b><small data-instrument-price="${esc(i.coin)}">—</small></span><i class="instrument-status" data-instrument-status="${esc(i.coin)}"></i></button><button class="icon-button instrument-remove" data-remove-instrument="${esc(i.coin)}" aria-label="Убрать ${esc(i.coin)}" ${S.instruments.length<2?'disabled':''}>×</button></div>`).join('');
+    list.innerHTML=rows.map(i=>`<div class="instrument-entry ${i.coin===S.coin?'active':''}" data-instrument-row="${esc(i.coin)}"><button class="instrument-link" data-instrument="${esc(i.coin)}" ${i.coin===S.coin?'aria-current="true"':''}><span class="instrument-symbol">${esc(i.coin.slice(0,1))}</span><span class="instrument-details"><b>${esc(i.coin)}</b><small data-instrument-price="${esc(i.coin)}">—</small><small class="instrument-progress" data-instrument-progress="${esc(i.coin)}" role="status" aria-live="polite"></small></span><i class="instrument-status" data-instrument-status="${esc(i.coin)}"></i></button>${i.local?.error?`<button class="instrument-retry" data-retry-instrument="${esc(i.coin)}" aria-label="Повторить добавление ${esc(i.coin)}">↻</button>`:''}<button class="icon-button instrument-remove" data-remove-instrument="${esc(i.coin)}" aria-label="Убрать ${esc(i.coin)}" ${i.local&&!i.local.error||!i.local&&S.instruments.length<2?'disabled':''}>×</button></div>`).join('');
   }
-  for(const i of S.instruments){const price=list.querySelector(`[data-instrument-price="${i.coin}"]`),status=list.querySelector(`[data-instrument-status="${i.coin}"]`);if(price)price.textContent=fmtPrice(i.price);if(status){status.classList.toggle('live',i.live>0);status.setAttribute('aria-label',`Биржевых потоков: ${i.live||0} / ${i.total||0}`);}}
+  for(const i of rows){const row=list.querySelector(`[data-instrument-row="${i.coin}"]`),price=list.querySelector(`[data-instrument-price="${i.coin}"]`),status=list.querySelector(`[data-instrument-status="${i.coin}"]`),progress=list.querySelector(`[data-instrument-progress="${i.coin}"]`),label=instrumentProgress(i);
+    row.dataset.state=i.local?(i.local.error?'error':'saving'):(i.state||'connecting');
+    if(price)price.textContent=fmtPrice(i.price);if(progress&&progress.textContent!==label)progress.textContent=label;
+    if(status){status.classList.toggle('live',i.live>0);status.setAttribute('aria-label',label||`Биржевых потоков: ${i.live||0} / ${i.total||0}`);}
+  }
+}
+async function addInstrument(coin){
+  coin=coin.trim().toUpperCase();
+  if(!/^[A-Z0-9]{1,20}$/.test(coin))throw new Error('Тикер должен состоять из букв и цифр');
+  const existing=Instruments.pending.get(coin);
+  if(existing&&!existing.error)return existing.task;
+  if(!existing&&S.instruments.some(i=>i.coin===coin)){await selectInstrument(coin);return;}
+  const revision=++Instruments.intent,pending={error:'',task:null};
+  Instruments.target=null;Instruments.pending.set(coin,pending);
+  setCoin(coin);renderInstruments();
+  $('instrumentList').querySelector(`[data-instrument="${coin}"]`)?.scrollIntoView({block:'nearest'});
+  $('instrumentDlg').close();$('coinInput').value='';
+  toast(`${coin} добавлена в список. Подключаем биржи…`);
+  pending.task=(async()=>{try{
+    const data=await api('/api/instruments',{method:'POST',body:JSON.stringify({coins:[coin],select:coin}),signal:AbortSignal.timeout(20000)});
+    if(Instruments.pending.get(coin)!==pending)return;
+    Instruments.pending.delete(coin);S.instruments=[...new Map([...S.instruments,...data.coins].map(i=>[i.coin,i])).values()];renderInstruments();
+    if(revision===Instruments.intent&&S.coin===coin)startCoinData();
+  }catch(error){
+    if(Instruments.pending.get(coin)!==pending)return;
+    const confirmed=S.instruments.find(i=>i.coin===coin&&i.starting===false);
+    if(confirmed){Instruments.pending.delete(coin);if(S.coin===coin)startCoinData();}
+    else{pending.error=error.name==='TimeoutError'?'Сервер не ответил. Можно повторить.':error.message;toast(`Не удалось добавить ${coin}: ${pending.error}`);}
+    renderInstruments();
+  }})();
+  return pending.task;
 }
 $('addInstrumentBtn').addEventListener('click',()=>{$('coinForm').reset();$('instrumentDlg').showModal();$('coinInput').focus();});
-$('instrumentList').addEventListener('click',e=>{const remove=e.target.closest('[data-remove-instrument]'),select=e.target.closest('[data-instrument]');
-  if(remove){const coin=remove.dataset.removeInstrument;$('removeInstrumentDlg').dataset.coin=coin;$('removeInstrumentText').textContent=`${coin}: потоки и оверлеи будут закрыты. Монету можно добавить снова; настройки бирж и фильтров сохранятся.`;$('removeInstrumentDlg').showModal();}
+$('instrumentList').addEventListener('click',e=>{const remove=e.target.closest('[data-remove-instrument]'),select=e.target.closest('[data-instrument]'),retry=e.target.closest('[data-retry-instrument]');
+  if(retry){addInstrument(retry.dataset.retryInstrument).catch(error=>toast(error.message));}
+  else if(remove){const coin=remove.dataset.removeInstrument;$('removeInstrumentDlg').dataset.coin=coin;$('removeInstrumentText').textContent=`${coin}: потоки и оверлеи будут закрыты. Монету можно добавить снова; настройки бирж и фильтров сохранятся.`;$('removeInstrumentDlg').showModal();}
   else if(select)selectInstrument(select.dataset.instrument).catch(error=>toast(error.message));
 });
 $('removeInstrumentForm').addEventListener('submit',async e=>{e.preventDefault();const coin=$('removeInstrumentDlg').dataset.coin;
-  try{const data=await api('/api/instruments/'+encodeURIComponent(coin),{method:'DELETE'});S.coinCache.delete(coin);S.instruments=data.coins;setCoin(data.selected);renderInstruments();$('removeInstrumentDlg').close();}catch(error){toast(error.message);}
+  try{let data;try{data=await api('/api/instruments/'+encodeURIComponent(coin),{method:'DELETE'});}catch(error){if(!Instruments.pending.get(coin)?.error)throw error;data=await api('/api/instruments');}
+    Instruments.pending.delete(coin);S.coinCache.delete(coin);S.instruments=data.coins;setCoin(data.selected);renderInstruments();$('removeInstrumentDlg').close();}catch(error){toast(error.message);}
 });
 $("coinForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const coin = $("coinInput").value.trim().toUpperCase();
   if (!coin) return;
-  try {
-    $('addInstrumentSubmit').disabled=true;
-    await selectInstrument(coin);
-    const data=await api('/api/instruments');S.instruments=data.coins;renderInstruments();
-    $("coinInput").value = "";
-    $('instrumentDlg').close();
-    renderStreams();
-    toast(`${coin} добавлен в инструменты`);
-  } catch (err) {
-    toast(err.message);
-  }finally{$('addInstrumentSubmit').disabled=false;}
+  try {await addInstrument(coin);} catch (err) {toast(err.message);}
 });
 
 // Per-coin collection settings (independent of tape display filters).
@@ -477,7 +536,7 @@ function connect() {
     } else if (msg.type === "alert") {
       if (msg.alert.coin === S.coin) addAlert(msg.alert);
     } else if (msg.type === "coin") {
-      if(!window.radarOverlay&&!Instruments.busy)setCoin(msg.coin);
+      if(!window.radarOverlay&&!Instruments.busy&&instrumentReady())setCoin(msg.coin);
     } else if(msg.type==='instruments'){
       S.instruments=msg.coins||[];renderInstruments();
       if(window.radarOverlay&&!S.instruments.some(i=>i.coin===S.coin)){S.streams=[];S.tape=[];if(window.A)A.snap=null;Desk.resetCoin();toast('Инструмент удалён из списка');}

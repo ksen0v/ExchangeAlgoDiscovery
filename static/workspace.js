@@ -22,7 +22,7 @@ window.Desk = new (class WorkspaceDesk {
     document.querySelectorAll('[data-placement]').forEach(b=>b.addEventListener('click',()=>{if(!this.active)return;this.active.mode=b.dataset.placement;this.chrome();this.changed();}));
     $('workspaceMenu').addEventListener('click',e=>{const b=e.target.closest('[data-space-action]');if(!b)return;const id=$('workspaceMenu').dataset.target;this.closeMenus();if(b.dataset.spaceAction==='create')this.nameDialog('create');else if(b.dataset.spaceAction==='delete')this.deleteDialog(id);else this.nameDialog(b.dataset.spaceAction,id);});
     $('moduleMenu').addEventListener('click',e=>{const b=e.target.closest('[data-module-action]');if(!b)return;const id=$('moduleMenu').dataset.target;this.closeMenus();const action=b.dataset.moduleAction;
-      if(action==='overlay')this.openOverlay(id);else if(action==='lock')this.lockOverlay(id);else if(action==='closeOverlay')this.closeOverlay(id);else if(action==='remove')this.remove(id);else if(action==='duplicate')this.duplicateModule(id);else this.nameDialog('module',id);
+      if(action==='overlay')this.openOverlay(id);else if(action==='overlaySettings')window.radarDesktop?.configureModuleOverlay(this.overlayKey(id));else if(action==='lock')this.lockOverlay(id);else if(action==='closeOverlay')this.closeOverlay(id);else if(action==='remove')this.remove(id);else if(action==='duplicate')this.duplicateModule(id);else this.nameDialog('module',id);
     });
     $('workspaceNameForm').addEventListener('submit',e=>{e.preventDefault();this.submitName();});
     $('deleteWorkspaceForm').addEventListener('submit',e=>{e.preventDefault();const id=$('deleteWorkspaceDlg').dataset.target;$('deleteWorkspaceDlg').close();this.deleteSpace(id);});
@@ -108,6 +108,7 @@ window.Desk = new (class WorkspaceDesk {
     const menu=$('moduleMenu');menu.querySelector('[data-module-action="overlay"]').textContent=open?'↗ Показать оверлей':'↗ Разместить оверлей';
     const lock=menu.querySelector('[data-module-action="lock"]');lock.disabled=!open;lock.setAttribute('aria-checked',String(locked));lock.textContent=`${locked?'✓ ':''}Сквозные клики`;
     menu.querySelector('[data-module-action="closeOverlay"]').disabled=!open;
+    menu.querySelector('[data-module-action="overlaySettings"]').disabled=!open;
     for(const action of ['rename','duplicate','remove','overlay'])menu.querySelector(`[data-module-action="${action}"]`).hidden=own;
   }
   openOverlay(id){const module=this.instances.get(id);if(module&&S.coin)window.radarDesktop?.openModuleOverlay(JSON.stringify({coin:S.coin,module:module.spec}));}

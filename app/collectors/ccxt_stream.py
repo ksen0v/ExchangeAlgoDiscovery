@@ -1,11 +1,14 @@
 """Streams for the 26 venues supported by ccxt (WebSocket via ccxt.pro, REST fallback)."""
 import asyncio
 import logging
+import ssl
 import time
+from types import SimpleNamespace
 from collections import defaultdict, deque
 
 import ccxt.async_support as ccxtasync
 import ccxt.pro as ccxtpro
+import certifi
 
 from app.collectors.base import BOOK_DEPTH, NotListed, Stream, TradesCallback, poll_loop
 from app.config import AMOUNT_IN_BASE, BOOK_AMOUNT_IN_BASE, CCXT_OPTIONS, QUOTE_OVERRIDE
@@ -29,32 +32,62 @@ class CcxtPool:
 
     def __init__(self) -> None:
         self._live: set[ccxtpro.Exchange] = set()
-        self._markets: dict[str, tuple[float, list, dict]] = {}
+        self._markets: dict[str, tuple[float, SimpleNamespace]] = {}
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._init_slots = asyncio.Semaphore(2)
+        self._tls_lock = asyncio.Lock()
+        self._tls_context = None
+
+    async def _context(self):
+        async with self._tls_lock:
+            if self._tls_context is None:
+                self._tls_context = await asyncio.to_thread(ssl.create_default_context, cafile=certifi.where())
+            return self._tls_context
+
+    @staticmethod
+    def _market_data(ex):
+        # Store prepared indexes, not a live exchange with its trade/order-book buffers.
+        fields = ("markets", "markets_by_id", "symbols", "ids", "currencies", "currencies_by_id",
+                  "baseCurrencies", "quoteCurrencies", "codes")
+        helpers = ex.options.get("marketHelperProps") or []
+        return SimpleNamespace(id=ex.id, options={"marketHelperProps":helpers,
+                               **{key:ex.options.get(key) for key in helpers}},
+                               **{key:getattr(ex, key) for key in fields})
 
     async def create(self, ex_id: str) -> ccxtpro.Exchange:
         # ccxt.pro for WebSocket venues; REST-only venues (BTSE, BtcTurk, ...) are polled
-        ex = (getattr(ccxtpro, ex_id, None) or getattr(ccxtasync, ex_id))(
-            {
-                "enableRateLimit": True,
-                "timeout": 30000,
-                "options": CCXT_OPTIONS.get(ex_id, {}),
-                "has": {"fetchCurrencies": False},  # not needed, slow on many venues
-            }
-        )
-        self._live.add(ex)
-        try:
-            async with self._locks[ex_id]:
+        async with self._locks[ex_id]:
+            async with self._init_slots:
+                context = await self._context()
+                factory = getattr(ccxtpro, ex_id, None) or getattr(ccxtasync, ex_id)
+                init = asyncio.create_task(asyncio.to_thread(factory, {
+                    "enableRateLimit":True,"timeout":30000,"options":CCXT_OPTIONS.get(ex_id, {}),
+                    "has":{"fetchCurrencies":False},"asyncio_loop":asyncio.get_running_loop(),
+                    "ssl_context":context,
+                }))
+                try:
+                    ex = await asyncio.shield(init)
+                except asyncio.CancelledError:
+                    # A worker cannot be cancelled halfway through construction. Close its result.
+                    try:
+                        ex = await init
+                    except Exception:
+                        pass
+                    else:
+                        await self.release(ex)
+                    raise
+            self._live.add(ex)
+            try:
                 cached = self._markets.get(ex_id)
                 if cached and time.time() - cached[0] < MARKETS_TTL:
-                    ex.set_markets(cached[1], cached[2])
+                    ex.set_markets_from_exchange(cached[1])
                 else:
                     await ex.load_markets()
-                    self._markets[ex_id] = (time.time(), list(ex.markets.values()), ex.currencies)
-        except BaseException:
-            await self.release(ex)
-            raise
-        return ex
+                    self._markets[ex_id] = (time.time(), self._market_data(ex))
+            except BaseException:
+                await self.release(ex)
+                raise
+            return ex
 
     async def release(self, ex: ccxtpro.Exchange | None) -> None:
         if ex is None:

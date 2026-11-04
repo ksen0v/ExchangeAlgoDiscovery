@@ -17,7 +17,7 @@ function setView(view){
   if(document.hidden)return;
   if(A.view==='dashboard'){
     renderStreams();rebuildTape();if(A.snap)renderAnalysis();
-    if(S.coin&&Desk.filter().analytics)api('/api/analytics?coin='+encodeURIComponent(S.coin)).then(onAnalytics).catch(e=>toast(e.message));
+    if(S.coin&&instrumentReady()&&Desk.filter().analytics)api('/api/analytics?coin='+encodeURIComponent(S.coin)).then(onAnalytics).catch(e=>toast(e.message));
   }else{loadHealth();A.healthTimer=setInterval(loadHealth,5000);}
 }
 window.setView=setView;
@@ -54,6 +54,7 @@ function refreshOiHistory(){
 window.refreshOiHistory=refreshOiHistory;
 
 async function loadHealth(){
+  if(!instrumentReady())return;
   try{
     const coin=S.coin,health=await api('/api/health?coin='+encodeURIComponent(coin));if(A.view!=='health'||document.hidden||health.coin!==S.coin)return;
     const rows=health.streams.filter(s=>$('healthAll').checked||!['na','noapi'].includes(s.status));
